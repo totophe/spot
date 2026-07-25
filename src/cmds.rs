@@ -111,6 +111,17 @@ pub fn fetch(dir: &Path, name: &str, opts: &Options) -> i32 {
 
 /// `None` means no daemon was listening.
 fn try_attach(dir: &Path, name: &str, steal: bool) -> Option<i32> {
+    // Refuse to attach to the session we are already sitting in. Without
+    // --steal this is caught by the busy check, but --steal would sail past it
+    // and produce a client whose stdout is the very PTY it is attached to —
+    // output feeding back into itself. In practice it appears to settle rather
+    // than spin, but "safe for reasons unclear" is not a property worth
+    // shipping, and stealing the session you are inside means nothing anyway.
+    if std::env::var_os("SPOT_SOCKET").map(PathBuf::from) == Some(paths::socket_path(dir, name)) {
+        eprintln!("spot: you are already inside '{name}'.");
+        eprintln!("      `spot where` shows the chain; `stay` leaves it.");
+        return Some(1);
+    }
     let flags = if steal { FLAG_STEAL } else { 0 };
     let sock = match client::connect(dir, name, ROLE_ATTACH, flags) {
         Ok(Some(s)) => s,

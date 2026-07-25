@@ -739,3 +739,115 @@ fn exiting_the_shell_says_the_session_ended() {
         "the session should be gone, not detached"
     );
 }
+
+#[test]
+fn flags_may_precede_the_session_name() {
+    // Regression: `spot fetch --steal dev` parsed "--steal" as the session name
+    // — and that spelling is exactly what the "already attached" error tells
+    // you to run. The steal test passed only because it put the flag last.
+    let env = Env::new("flagorder");
+    let _c = PtyClient::spawn(&env, &["held", "--", "sleep", "300"]);
+    assert!(wait_state(&env, "held", "attached"));
+
+    for args in [
+        vec!["fetch", "--steal", "held"],
+        vec!["drop", "--force", "held"],
+        vec!["stay", "held"],
+    ] {
+        let (out, _) = env.run(&args);
+        assert!(
+            !out.contains("invalid session name"),
+            "{args:?} should find the name, got: {out}"
+        );
+    }
+}
+
+#[test]
+fn the_busy_message_suggests_a_command_that_works() {
+    // The error text and the parser must agree; they did not.
+    let env = Env::new("suggestion");
+    let _c = PtyClient::spawn(&env, &["taken", "--", "sleep", "300"]);
+    assert!(wait_state(&env, "taken", "attached"));
+
+    let second = PtyClient::spawn(&env, &["fetch", "taken"]);
+    let out = second.read_until(Duration::from_secs(5), |a| {
+        String::from_utf8_lossy(a).contains("already attached")
+    });
+    let msg = String::from_utf8_lossy(&out);
+    let suggested = msg
+        .split_whitespace()
+        .skip_while(|w| !w.contains("`spot"))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        suggested.contains("--steal"),
+        "expected a --steal suggestion, got: {msg}"
+    );
+    // Run precisely what was suggested.
+    let (out, _) = env.run(&["fetch", "--steal", "taken"]);
+    assert!(
+        !out.contains("invalid session name"),
+        "the suggested command must parse, got: {out}"
+    );
+}
+
+#[test]
+fn refuses_to_attach_to_the_session_you_are_inside() {
+    // --steal would otherwise bypass the busy check and hand you a client whose
+    // stdout is the PTY it is attached to. Driven through the environment
+    // rather than a shell so it tests the guard and not the shell's timing.
+    let env = Env::new("selfattach");
+    let _c = PtyClient::spawn(&env, &["mine", "--", "sleep", "300"]);
+    assert!(wait_state(&env, "mine", "attached"));
+
+    let sock = env.dir.join("spot").join("mine.sock");
+    let out = env
+        .cmd()
+        .args(["fetch", "--steal", "mine"])
+        .env("SPOT_SOCKET", &sock)
+        .output()
+        .unwrap();
+    let msg = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "should refuse: {msg}");
+    assert!(msg.contains("already inside 'mine'"), "got: {msg}");
+    // Untouched: the original client is still attached.
+    assert_eq!(state_of(&env, "mine").as_deref(), Some("attached"));
+}
+
+#[test]
+fn reattaching_forces_a_full_screen_app_to_repaint() {
+    // A bare SIGWINCH is not enough. An app that reads the window size inside
+    // its handler, sees no change, and does nothing leaves you looking at a
+    // black screen — which is what zellij does. Reattach must deliver a size
+    // the app can actually observe as different.
+    let env = Env::new("repaint");
+
+    let probe = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/winch_probe.py");
+
+    let c = PtyClient::spawn(&env, &["tui", "--", "python3", probe]);
+    assert!(wait_state(&env, "tui", "attached"));
+    c.read_until(Duration::from_secs(3), |a| {
+        a.windows(8).any(|w| w == b"\x1b[?1049h")
+    });
+    drop(c);
+    assert!(
+        wait_state(&env, "tui", "detached"),
+        "client dropped, session should be detached"
+    );
+
+    // Reattach at the size the session already has — the case that used to do
+    // nothing observable.
+    let again = PtyClient::spawn(&env, &["fetch", "tui"]);
+    let out = again.read_until(Duration::from_secs(6), |a| {
+        String::from_utf8_lossy(a).contains("SIZE 23")
+    });
+    let seen = String::from_utf8_lossy(&out);
+    assert!(
+        seen.contains("SIZE 23"),
+        "the child never observed a size *change* on reattach. Saw: {:?}",
+        seen.escape_debug().to_string()
+    );
+
+    let _ = env.run(&["drop", "tui", "--force"]);
+}

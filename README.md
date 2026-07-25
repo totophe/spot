@@ -170,7 +170,12 @@ things, in order:
    distinct from *identical*.
 2. **Replay the ring buffer** (64 KiB by default) so a shell shows the context
    you left behind.
-3. **Kick `SIGWINCH`** so full-screen applications repaint.
+3. **Force a real resize** so full-screen applications repaint. A bare
+   `SIGWINCH` is not enough: an app that reads the window size in its handler,
+   sees no change and does nothing leaves you on a black screen — which is what
+   zellij does. So on reattach spot briefly applies a size one row short, holds
+   it ~120 ms, then restores the true size. The change has to *linger*, or an
+   app that reads the size in-handler still sees nothing.
 
 `--ring-bytes 0` turns off step 2. A `--redraw` flag to disable steps 1 and 3
 individually is specified but not implemented in this alpha.
@@ -231,6 +236,8 @@ the last session ends `spot` leaves nothing behind but its own binary.
 ## Known limits
 
 - **Alpha.** Tested, but not yet battle-worn.
+- The reattach repaint briefly resizes the terminal by one row. Full-screen apps
+  reflow through it; it reads as part of the redraw.
 - `TERM` is fixed when the session is created. Reattaching from a terminal with
   a different `TERM` may render imperfectly. `tmux` and `screen` share this
   limitation.

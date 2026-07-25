@@ -29,6 +29,11 @@ const MAX_QUEUE: usize = 1024 * 1024;
 /// `spot run -- make` can still report that make failed.
 const LINGER_FOR_FIRST_ATTACH: Duration = Duration::from_secs(10);
 
+/// How long the deliberately-wrong window size stays in effect on reattach.
+/// Long enough for a full-screen app to notice and repaint, short enough that
+/// the reflow reads as part of the redraw rather than a glitch.
+const REPAINT_NUDGE: Duration = Duration::from_millis(120);
+
 struct Conn {
     id: u64,
     stream: UnixStream,
@@ -101,6 +106,11 @@ pub struct Daemon {
     shutting_down: bool,
     /// True once a client has attached and been served at least once.
     served_attach: bool,
+    /// Set on attach: the next resize must force a full repaint.
+    pending_repaint: bool,
+    /// A deliberately-wrong window size in effect, and when to put the real one
+    /// back. See the resize handling for why the wrong size has to linger.
+    resize_restore: Option<(Instant, (u16, u16, u16, u16))>,
     /// While shutting down before anyone ever attached, how long to hold on so
     /// the creating client can still collect the exit status.
     linger_until: Option<Instant>,
@@ -220,6 +230,8 @@ fn start(
         pty_eof: false,
         shutting_down: false,
         served_attach: false,
+        pending_repaint: false,
+        resize_restore: None,
         linger_until: None,
         sig_read: pipe.read,
     })
@@ -264,7 +276,15 @@ impl Daemon {
                 });
             }
 
-            let timeout = if self.linger_until.is_some() { 100 } else { -1 };
+            let mut timeout = if self.linger_until.is_some() { 100 } else { -1 };
+            if let Some((at, _)) = self.resize_restore {
+                let ms = at.saturating_duration_since(Instant::now()).as_millis() as i32;
+                timeout = if timeout < 0 {
+                    ms.max(1)
+                } else {
+                    timeout.min(ms.max(1))
+                };
+            }
             let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
             if n < 0 {
                 let e = std::io::Error::last_os_error();
@@ -287,6 +307,18 @@ impl Daemon {
             if let Some(slot) = master_slot {
                 if fds[slot].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
                     self.pump_pty();
+                }
+            }
+
+            if let Some((at, size)) = self.resize_restore {
+                if Instant::now() >= at {
+                    self.resize_restore = None;
+                    let (c, r, x, y) = size;
+                    let _ = self.pty.set_winsize(c, r, x, y);
+                    if self.exit_status.is_none() {
+                        let pg = pty::foreground_pgrp(self.pty.master.as_raw_fd(), self.child_pid);
+                        unsafe { libc::kill(-pg, libc::SIGWINCH) };
+                    }
                 }
             }
 
@@ -556,11 +588,31 @@ impl Daemon {
             }
             T_RESIZE if role == ROLE_ATTACH => {
                 if let Some((cols, rows, x, y)) = decode_resize(&f.payload) {
+                    let repaint = self.pending_repaint;
+                    self.pending_repaint = false;
                     self.winsize = (cols, rows, x, y);
-                    let _ = self.pty.set_winsize(cols, rows, x, y);
-                    // The kick that makes full-screen applications repaint. Sent
-                    // unconditionally: an unchanged size generates no SIGWINCH of
-                    // its own, and reattaching at the same size still needs one.
+
+                    // Reattaching to a full-screen app is the case that decides
+                    // whether this tool is any good, and a bare SIGWINCH is not
+                    // enough: zellij (and others) read the size, see no change,
+                    // and do nothing — leaving you looking at a black screen.
+                    // Force a genuine change so the repaint is unavoidable.
+                    if repaint && self.modes.alt_screen() && self.exit_status.is_none() {
+                        // The wrong size has to *linger*. Setting it and putting
+                        // it back immediately is useless: an app that reads the
+                        // size inside its SIGWINCH handler still sees no change,
+                        // which is exactly the black screen we are fixing.
+                        let nudged = if rows > 1 { rows - 1 } else { rows + 1 };
+                        let _ = self.pty.set_winsize(cols, nudged, x, y);
+                        self.resize_restore =
+                            Some((Instant::now() + REPAINT_NUDGE, (cols, rows, x, y)));
+                    } else {
+                        self.resize_restore = None;
+                        let _ = self.pty.set_winsize(cols, rows, x, y);
+                    }
+
+                    // Belt and braces for apps that do repaint on a same-size
+                    // SIGWINCH, and for the normal screen where we do not nudge.
                     if self.exit_status.is_none() {
                         let pg = pty::foreground_pgrp(self.pty.master.as_raw_fd(), self.child_pid);
                         unsafe { libc::kill(-pg, libc::SIGWINCH) };
@@ -647,6 +699,7 @@ impl Daemon {
             }
         }
         self.served_attach = true;
+        self.pending_repaint = true;
         self.linger_until = None;
         if dead_status.is_some() && keep {
             // A DEAD session is reaped by the attach that collects its status.

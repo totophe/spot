@@ -86,7 +86,7 @@ fn dispatch(args: Vec<String>) -> i32 {
         Some("ls" | "ps") => with_dir(cmds::ls),
         Some("where" | "pwd") => cmds::where_am_i(),
         Some("stay") => {
-            let name = args.get(1).cloned();
+            let name = first_positional(&args);
             with_dir(|dir| {
                 if let Some(n) = &name {
                     if !paths::valid_name(n) {
@@ -98,7 +98,7 @@ fn dispatch(args: Vec<String>) -> i32 {
             })
         }
         Some("drop") => {
-            let Some(name) = args.get(1).cloned() else {
+            let Some(name) = first_positional(&args) else {
                 eprintln!("spot: drop needs a session name");
                 return 1;
             };
@@ -112,7 +112,7 @@ fn dispatch(args: Vec<String>) -> i32 {
             })
         }
         Some("fetch" | "attach") => {
-            let Some(name) = args.get(1).cloned() else {
+            let Some(name) = first_positional(&args) else {
                 eprintln!("spot: fetch needs a session name");
                 return 1;
             };
@@ -139,6 +139,16 @@ fn dispatch(args: Vec<String>) -> i32 {
         }
         None => with_dir(picker),
     }
+}
+
+/// The first non-flag argument after the verb. Flags may appear on either side
+/// of the name: `spot fetch --steal dev` and `spot fetch dev --steal` are the
+/// same command, and the first form is what our own error messages suggest.
+fn first_positional(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|a| !a.starts_with('-'))
+        .map(|a| a.to_string())
 }
 
 fn start(dir: &std::path::Path, name: &str, opts: &Options, create: bool) -> i32 {
