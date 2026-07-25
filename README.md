@@ -297,6 +297,15 @@ those is byte-transparent by default — both grab `Ctrl-\`), terminal modes are
 tracked and restored, and it ships the login picker inherited from
 [tmosh](https://github.com/totophe/tmosh), its direct ancestor.
 
+Against `tmux`, the comparison is a trade rather than a ranking. `tmux`
+reconstructs the screen because it keeps a model of it — which means it must
+understand every byte passing through, and whatever its parser does not know
+(sixel and kitty graphics, newer attributes, whatever comes next) is dropped or
+mangled. `spot` never interprets the stream, so it cannot corrupt it, and
+equally cannot rebuild what it never stored. **`tmux` loses what it cannot
+model; `spot` loses screen content it never kept.** Neither is perfect; which
+one hurts depends on what you run.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

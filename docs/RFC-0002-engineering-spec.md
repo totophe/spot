@@ -422,11 +422,26 @@ the link dies, because the client dies with it (§6.5).
 `dtach` gives a blunt global choice (`-r none|ctrl_l|winch`, defaulting to `ctrl_l`) and
 no mode restoration, so reattaching to a mouse-enabled or alt-screen app can leave the
 terminal unusable. `abduco` is a cleaner independent reimplementation of the same idea
-and documents no mode handling either. `tmux` gets it right by being a terminal
-emulator. Mode restoration is the cheap 90% of the emulator's benefit — it is what makes
-the terminal *usable* on reattach, as distinct from *identical*. Nothing in this genre
-appears to do it, and it costs a few hundred lines. If there is one thing to get right,
-it is this.
+and documents no mode handling either. `tmux` reconstructs far more, by keeping its own
+model of the screen.
+
+It is tempting to call that "solved" and this a cheap approximation. That overstates it
+in both directions. `tmux` is not perfect either, and its approach has a structural
+price: to model the stream it must *understand* the stream, so anything its parser does
+not know — sixel and kitty graphics, newer SGR attributes, whatever gets invented next —
+is dropped or mangled on the way through. Its resize semantics with multiple clients are
+their own well-known mess.
+
+`spot` has the inverse property, and it follows directly from principle 3 rather than
+being a happy accident: because it never interprets the byte stream, it cannot corrupt
+it. Anything the terminal understands works through `spot`, including sequences that do
+not exist yet.
+
+So these are two failure modes, not a solution and an approximation. **`tmux` loses what
+it cannot model; `spot` loses screen content it never stored.** Which one hurts depends
+on what you run. Mode restoration is what buys the second position its usability — it
+makes the terminal *usable* on reattach, as distinct from *identical* — and it costs a
+few hundred lines rather than a few thousand.
 
 Secondary differentiator worth noting: both `dtach` and `abduco` intercept `Ctrl-\` on
 `stdin` **by default** (`-E` / `-e` to change or disable). `spot` intercepts nothing
