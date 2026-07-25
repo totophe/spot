@@ -264,10 +264,11 @@ fn run_daemon(args: &[String]) -> i32 {
         i += 1;
     }
 
-    let argv = if command.is_empty() {
+    // `program` and `argv[0]` differ for a login shell — see Pty::spawn.
+    let (program, argv) = if command.is_empty() {
         default_shell()
     } else {
-        command
+        (command[0].clone(), command)
     };
     let sock = paths::runtime_dir()
         .map(|d| paths::socket_path(&d, &name))
@@ -279,19 +280,20 @@ fn run_daemon(args: &[String]) -> i32 {
         ),
         ("SPOT_SESSION".to_string(), name.clone()),
     ];
-    daemon::run(name, argv, env, keep, ring, (size.0, size.1, 0, 0));
+    daemon::run(name, program, argv, env, keep, ring, (size.0, size.1, 0, 0));
 }
 
-/// `$SHELL` as a login shell, per screen/tmux convention. Recursion is not a
-/// concern: the `--init` snippet skips when `SPOT_SOCKET` is set.
-fn default_shell() -> Vec<String> {
+/// `$SHELL` as a login shell, per screen/tmux convention: returns the program
+/// path and the argv to present, where `argv[0]` carries a leading `-`. That
+/// dash is a *marker in argv[0]*, never an argument. Recursion is not a concern:
+/// the `--init` snippet skips when `SPOT_SOCKET` is set.
+fn default_shell() -> (String, Vec<String>) {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let base = PathBuf::from(&shell)
         .file_name()
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_else(|| "sh".to_string());
-    // argv[0] with a leading '-' is what makes it a login shell.
-    vec![shell, format!("-{base}")]
+    (shell, vec![format!("-{base}")])
 }
 
 fn print_help() {
@@ -352,11 +354,13 @@ mod tests {
     #[test]
     fn default_shell_is_a_login_shell() {
         std::env::set_var("SHELL", "/bin/zsh");
-        let v = default_shell();
-        assert_eq!(v[0], "/bin/zsh");
+        let (program, argv) = default_shell();
+        assert_eq!(program, "/bin/zsh", "exec the real binary");
         assert_eq!(
-            v[1], "-zsh",
-            "argv[0] must be dash-prefixed for a login shell"
+            argv,
+            vec!["-zsh".to_string()],
+            "the dash belongs in argv[0], and there must be no other arguments — \
+             passing `-zsh` as an argument makes zsh fail with 'bad option: -z'"
         );
     }
 

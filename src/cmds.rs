@@ -73,13 +73,24 @@ pub fn attach_or_create(dir: &Path, name: &str, opts: &Options) -> i32 {
         return code;
     }
     match create(dir, name, opts) {
-        Ok(()) => match try_attach(dir, name, opts.steal) {
-            Some(code) => code,
-            None => {
-                eprintln!("spot: '{name}' vanished immediately after starting");
-                1
+        Ok(()) => {
+            // Announce creation (RFC-0001 §7.3). `spot <name>` creates when the
+            // session does not exist, so a typo would otherwise drop you into a
+            // fresh shell that looks exactly like the one you meant to resume.
+            // Seeing the name you actually got is what makes the bare form safe.
+            let pid = client::probe(dir, name)
+                .and_then(|l| parse_status(&l))
+                .map(|s| s.child_pid)
+                .unwrap_or(0);
+            eprintln!("🐕 Spot is guarding '{name}' (PID {pid})…");
+            match try_attach(dir, name, opts.steal) {
+                Some(code) => code,
+                None => {
+                    eprintln!("spot: '{name}' vanished immediately after starting");
+                    1
+                }
             }
-        },
+        }
         Err(e) => {
             eprintln!("spot: cannot start '{name}': {e}");
             1

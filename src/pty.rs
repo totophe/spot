@@ -35,17 +35,26 @@ pub fn open() -> io::Result<Pty> {
 }
 
 impl Pty {
-    /// Fork/exec `argv` with the slave as its controlling terminal.
-    pub fn spawn(&self, argv: &[String], env: &[(String, String)]) -> io::Result<Child> {
-        let mut cmd = Command::new(&argv[0]);
+    /// Fork/exec `program` with the slave as its controlling terminal.
+    ///
+    /// `argv` is the argument vector as the child will see it, **including
+    /// `argv[0]`** — which is not always the program path. A login shell is
+    /// exactly this case: program `/bin/zsh`, `argv[0]` `-zsh`. Passing the
+    /// dash-prefixed name as a real argument instead makes zsh reject it as an
+    /// option ("bad option: -z").
+    pub fn spawn(
+        &self,
+        program: &str,
+        argv: &[String],
+        env: &[(String, String)],
+    ) -> io::Result<Child> {
+        let mut cmd = Command::new(program);
         cmd.args(&argv[1..]);
         for (k, v) in env {
             cmd.env(k, v);
         }
 
         let slave_path = self.slave_path.clone();
-        // The child's argv[0] is set by the caller (a leading `-` makes a login
-        // shell), so we must not let Command override it.
         unsafe {
             use std::os::unix::process::CommandExt;
             cmd.pre_exec(move || {

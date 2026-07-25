@@ -78,6 +78,8 @@ impl Conn {
 
 pub struct Daemon {
     name: String,
+    /// The argv the child sees; `argv[0]` may differ from the program path (a
+    /// login shell is `-zsh`). This is what `spot ls` shows, matching `ps`.
     argv: Vec<String>,
     dir: PathBuf,
     pty: Pty,
@@ -108,6 +110,7 @@ pub struct Daemon {
 /// Entry point for `spot --daemon`. Never returns.
 pub fn run(
     name: String,
+    program: String,
     argv: Vec<String>,
     env: Vec<(String, String)>,
     keep_on_exit: bool,
@@ -121,6 +124,7 @@ pub fn run(
     match start(
         &dir,
         name.clone(),
+        program,
         argv,
         env,
         keep_on_exit,
@@ -149,6 +153,7 @@ fn fail_early(target: Option<(&Path, &str)>, msg: &str) -> ! {
 fn start(
     dir: &Path,
     name: String,
+    program: String,
     argv: Vec<String>,
     env: Vec<(String, String)>,
     keep_on_exit: bool,
@@ -188,7 +193,7 @@ fn start(
         fs::set_permissions(&sock, fs::Permissions::from_mode(0o600))?;
     }
 
-    let child = pty.spawn(&argv, &env)?;
+    let child = pty.spawn(&program, &argv, &env)?;
     let child_pid = child.id() as i32;
     let now = unix_now();
 

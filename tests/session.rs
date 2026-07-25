@@ -67,11 +67,18 @@ struct PtyClient {
 
 impl PtyClient {
     fn spawn(env: &Env, args: &[&str]) -> Self {
+        Self::spawn_with(env, args, &[])
+    }
+
+    fn spawn_with(env: &Env, args: &[&str], extra_env: &[(&str, &str)]) -> Self {
         let (master, slave) = open_pty();
         let child = unsafe {
             use std::os::unix::process::CommandExt;
-            env.cmd()
-                .args(args)
+            let mut c = env.cmd();
+            for (k, v) in extra_env {
+                c.env(k, v);
+            }
+            c.args(args)
                 .stdin(stdio_dup(slave))
                 .stdout(stdio_dup(slave))
                 .stderr(stdio_dup(slave))
@@ -549,4 +556,30 @@ fn version_is_reachable_from_every_spelling() {
             "{flag} should print the version, got: {out}"
         );
     }
+}
+
+#[test]
+fn the_default_child_is_a_working_login_shell() {
+    // Regression: `spot <name>` with no `-- command` is THE common path, and it
+    // was broken — the login-shell dash was passed as an argument instead of
+    // living in argv[0], so zsh died with "bad option: -z". Every other test
+    // here passes an explicit command, so none of them caught it.
+    let env = Env::new("loginsh");
+    let c = PtyClient::spawn_with(&env, &["loginsh"], &[("SHELL", "/bin/sh")]);
+    assert!(wait_state(&env, "loginsh", "attached"));
+
+    c.write(b"echo ARGV0=[$0]\n");
+    let out = c.read_until(Duration::from_secs(5), |a| {
+        String::from_utf8_lossy(a).contains("ARGV0=[-")
+    });
+    let s = String::from_utf8_lossy(&out);
+
+    assert!(
+        !s.contains("bad option") && !s.contains("Usage"),
+        "the shell rejected its own argv: {s}"
+    );
+    assert!(
+        s.contains("ARGV0=[-sh]"),
+        "expected a login shell whose argv[0] is '-sh', got: {s}"
+    );
 }

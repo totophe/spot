@@ -80,6 +80,18 @@ spot ls                  List sessions (alias: ps)
 spot drop <name>         Terminate a session's child process
 ```
 
+`spot <name>` creates the session if it does not exist, and announces it —
+`🐕 Spot is guarding 'dev' (PID 10423)…` — so a typo shows you the name you
+actually got instead of dropping you into a look-alike shell. Use `spot fetch
+<name>` when you mean "attach or fail".
+
+The bare form is shadowed by the verbs (`ls ps stay drop fetch attach help`), so
+a session named `ls` cannot be reached as `spot ls`. Nothing becomes
+unreachable, though — every verb takes a name, so `spot attach ls`, `spot fetch
+ls`, `spot stay ls` and `spot drop ls` all work on it. The vocabulary is fixed
+by [RFC-0001](docs/RFC-0001-spot-pty.md) §3 and will not grow, which is what
+keeps a future verb from silently stealing an existing session name.
+
 ```sh
 spot dev                              # a login shell, guarded
 spot build -- cargo watch -x test     # guard a specific command
