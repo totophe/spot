@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: build, test & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        # The integration tests each drive a real PTY, a daemon and a shell.
+        # Running twelve of those at full parallelism starves daemon startup on
+        # a shared runner and makes the suite flaky; four is stable and still
+        # finishes in seconds.
+        run: cargo test --all -- --test-threads=4
+      - name: Build (release)
+        run: cargo build --release

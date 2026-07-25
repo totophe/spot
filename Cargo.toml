@@ -1,0 +1,28 @@
+[package]
+name = "spot"
+version = "0.1.0"
+edition = "2021"
+description = "Pseudo Indestructible Terminal — a PTY session guardian"
+license = "MIT"
+repository = "https://github.com/totophe/spot"
+readme = "README.md"
+
+[[bin]]
+name = "spot"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+# NOTE: deliberately NOT panic = "abort" (which tmosh uses). The client puts the
+# terminal in raw mode and relies on Drop to restore it; aborting would skip that
+# and leave the user's terminal unusable.
+panic = "unwind"
