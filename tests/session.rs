@@ -508,3 +508,32 @@ fn stale_sockets_are_cleaned_up_rather_than_reported() {
     );
     assert!(!sock.exists(), "stale socket should have been unlinked");
 }
+
+#[test]
+fn help_is_reachable_from_every_spelling() {
+    // Regression: `stay --help` used to be read as a session name called
+    // "--help". Same for `drop --help` and `fetch --help`.
+    let env = Env::new("help");
+    for args in [
+        vec!["--help"],
+        vec!["-h"],
+        vec!["help"],
+        vec!["stay", "--help"],
+        vec!["drop", "--help"],
+        vec!["fetch", "--help"],
+        vec!["ls", "--help"],
+    ] {
+        let (out, code) = env.run(&args);
+        assert_eq!(code, 0, "{args:?} should succeed, got: {out}");
+        assert!(
+            out.contains("Pseudo Indestructible Terminal"),
+            "{args:?} should print help, got: {out}"
+        );
+    }
+    // ...but a `--help` meant for the child must reach the child untouched.
+    let (out, _) = env.run(&["helpsess", "--", "echo", "--help"]);
+    assert!(
+        !out.contains("Pseudo Indestructible Terminal"),
+        "--help after `--` belongs to the child, got: {out}"
+    );
+}

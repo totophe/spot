@@ -13,3 +13,6 @@
 *~
 .idea/
 .vscode/
+
+# Local hand-built binaries for host testing
+/dist

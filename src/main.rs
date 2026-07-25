@@ -51,6 +51,18 @@ fn main() -> ExitCode {
 }
 
 fn dispatch(args: Vec<String>) -> i32 {
+    // `--help` anywhere before a `--` means help, whatever the subcommand:
+    // `stay --help` and `drop --help` should not be read as session names.
+    // Scanning stops at `--` so `spot dev -- mycmd --help` still runs mycmd.
+    if args
+        .iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| a == "--help" || a == "-h")
+    {
+        print_help();
+        return 0;
+    }
+
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
             println!("spot {VERSION}");
