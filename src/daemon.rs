@@ -657,6 +657,7 @@ impl Daemon {
     }
 
     fn do_detach(&mut self, requester: u64) {
+        let had_client = self.attached.is_some();
         if let Some(cur) = self.attached {
             let clear = self.modes.clear_sequence();
             if let Some(c) = self.conns.iter_mut().find(|c| c.id == cur) {
@@ -672,7 +673,10 @@ impl Daemon {
         }
         if let Some(c) = self.conns.iter_mut().find(|c| c.id == requester) {
             if c.role == ROLE_COMMAND {
-                c.queue(T_DETACHED, &[REASON_REQUESTED]);
+                // Second byte tells the commander whether it actually detached
+                // something, so `stay` can distinguish "done" from "it was
+                // already detached" instead of exiting silently either way.
+                c.queue(T_DETACHED, &[REASON_REQUESTED, u8::from(had_client)]);
                 c.closing = true;
             }
         }

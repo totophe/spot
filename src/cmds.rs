@@ -208,6 +208,7 @@ fn create(dir: &Path, name: &str, opts: &Options) -> std::io::Result<()> {
 /// "the only session that happens to exist". A command that detaches something
 /// different depending on how many sessions are running is not one you can trust.
 pub fn stay(dir: &Path, name: Option<&str>) -> i32 {
+    let own_socket = std::env::var_os("SPOT_SOCKET").map(PathBuf::from);
     let sock: PathBuf = match name {
         Some(n) => paths::socket_path(dir, n),
         None => match std::env::var_os("SPOT_SOCKET") {
@@ -253,7 +254,29 @@ pub fn stay(dir: &Path, name: Option<&str>) -> i32 {
         eprintln!("spot: could not send detach");
         return 1;
     }
-    let _ = client::read_frame(&mut s, &mut dec);
+
+    // If we are detaching the very session we are sitting in, the attached
+    // client is this terminal and it prints its own farewell — a second message
+    // here would just be noise, and would race the detach on its way through
+    // the PTY. Anywhere else, we are the only one who can report.
+    let detaching_ourselves = own_socket.as_deref() == Some(sock.as_path());
+    let ack = client::read_frame(&mut s, &mut dec).ok().flatten();
+    if !detaching_ourselves {
+        let label = sock
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "session".to_string());
+        match ack {
+            Some(f) if f.ty == T_DETACHED => {
+                if f.payload.get(1).copied().unwrap_or(1) == 1 {
+                    eprintln!("🦮 Detached '{label}'. Spot will stay!");
+                } else {
+                    eprintln!("🐾 '{label}' was already detached.");
+                }
+            }
+            _ => eprintln!("spot: no acknowledgement from '{label}'"),
+        }
+    }
     0
 }
 

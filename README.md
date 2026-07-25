@@ -115,8 +115,27 @@ inherits. So with `ssh → spot → zellij` and two zellij tabs, typing `stay` i
 either tab detaches the whole spot session — zellij and all its tabs — and
 reconnecting puts you back exactly where you were.
 
+Whoever types the command gets the confirmation: detaching your own session
+prints the farewell once, and `spot stay <other>` tells *you* it worked rather
+than only telling the terminal you just let go of.
+
 Closing your terminal, losing WiFi, or shutting the laptop detaches too. The
 daemon notices the broken pipe and keeps the child running.
+
+### Knowing you are inside one
+
+`spot` has no status bar — that is a multiplexer's job, and it would mean owning
+part of your screen. Every process inside a session inherits `$SPOT_SESSION`, so
+put it in your prompt:
+
+```sh
+# zsh
+[[ -n $SPOT_SESSION ]] && RPROMPT="%F{cyan}🐕 $SPOT_SESSION%f $RPROMPT"
+```
+
+Worth doing early. Sessions nest deliberately — running `spot other` inside a
+session gives you a session inside a session, with `stay` detaching the inner
+one — and without a prompt marker the two are indistinguishable.
 
 > Typing `stay` inside a **dev container** does not work and is out of scope:
 > `docker exec` does not carry host environment, and the socket path is a host

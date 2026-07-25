@@ -22,7 +22,21 @@ impl Env {
         let dir = std::env::temp_dir().join(format!("spot-it-{}-{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // A `stay` symlink, exactly as install.sh creates it, so tests can go
+        // through argv[0] dispatch rather than always spelling `spot stay`.
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(SPOT, bin.join("stay")).unwrap();
         Self { dir }
+    }
+
+    /// PATH with this env's `stay` symlink in front.
+    fn path_with_stay(&self) -> String {
+        format!(
+            "{}:{}",
+            self.dir.join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
     }
 
     fn cmd(&self) -> Command {
@@ -582,4 +596,61 @@ fn the_default_child_is_a_working_login_shell() {
         s.contains("ARGV0=[-sh]"),
         "expected a login shell whose argv[0] is '-sh', got: {s}"
     );
+}
+
+#[test]
+fn stay_reports_to_whoever_typed_it() {
+    // The confirmation used to come only from the attached client, so detaching
+    // someone else's terminal reported to *them* and left you with silence.
+    let env = Env::new("stayreport");
+    let _c = PtyClient::spawn(&env, &["reported", "--", "sleep", "300"]);
+    assert!(wait_state(&env, "reported", "attached"));
+
+    let (out, code) = env.run(&["stay", "reported"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("Detached 'reported'"),
+        "the commander should be told it worked, got: {out}"
+    );
+    assert!(wait_state(&env, "reported", "detached"));
+
+    // Detaching an already-detached session is not a failure, but it is also
+    // not the same thing, and saying nothing at all is the worst of both.
+    let (out, code) = env.run(&["stay", "reported"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("already detached"),
+        "expected an already-detached notice, got: {out}"
+    );
+}
+
+#[test]
+fn bare_stay_inside_a_session_reports_exactly_once() {
+    // Via the `stay` symlink and $SPOT_SOCKET — the real in-session path, which
+    // no other test exercises. The attached client prints the farewell, so the
+    // command itself must stay quiet or the message would appear twice.
+    let env = Env::new("stayinside");
+    let c = PtyClient::spawn_with(
+        &env,
+        &["inside"],
+        &[("SHELL", "/bin/sh"), ("PATH", &env.path_with_stay())],
+    );
+    assert!(wait_state(&env, "inside", "attached"));
+
+    c.write(b"stay\n");
+    let out = c.read_until(Duration::from_secs(5), |a| {
+        String::from_utf8_lossy(a).contains("Spot will stay")
+    });
+    let s = String::from_utf8_lossy(&out);
+
+    assert_eq!(
+        s.matches("Spot will stay").count(),
+        1,
+        "expected exactly one farewell, got: {s}"
+    );
+    assert!(
+        !s.contains("already detached"),
+        "the in-session command must not add its own line: {s}"
+    );
+    assert!(wait_state(&env, "inside", "detached"));
 }
