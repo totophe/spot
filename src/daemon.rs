@@ -111,6 +111,9 @@ pub struct Daemon {
     /// A deliberately-wrong window size in effect, and when to put the real one
     /// back. See the resize handling for why the wrong size has to linger.
     resize_restore: Option<(Instant, (u16, u16, u16, u16))>,
+    /// The size currently set on the PTY, so we can tell a real change (which
+    /// the kernel signals for us) from a no-op (which it does not).
+    applied_size: (u16, u16, u16, u16),
     /// While shutting down before anyone ever attached, how long to hold on so
     /// the creating client can still collect the exit status.
     linger_until: Option<Instant>,
@@ -232,6 +235,7 @@ fn start(
         served_attach: false,
         pending_repaint: false,
         resize_restore: None,
+        applied_size: winsize,
         linger_until: None,
         sig_read: pipe.read,
     })
@@ -313,12 +317,7 @@ impl Daemon {
             if let Some((at, size)) = self.resize_restore {
                 if Instant::now() >= at {
                     self.resize_restore = None;
-                    let (c, r, x, y) = size;
-                    let _ = self.pty.set_winsize(c, r, x, y);
-                    if self.exit_status.is_none() {
-                        let pg = pty::foreground_pgrp(self.pty.master.as_raw_fd(), self.child_pid);
-                        unsafe { libc::kill(-pg, libc::SIGWINCH) };
-                    }
+                    self.apply_winsize(size);
                 }
             }
 
@@ -481,6 +480,23 @@ impl Daemon {
         }
     }
 
+    /// Apply a window size and ensure the child gets exactly one `SIGWINCH`.
+    ///
+    /// The kernel raises `SIGWINCH` itself whenever `TIOCSWINSZ` actually
+    /// changes the size, so signalling unconditionally delivered *two* per
+    /// resize — two full re-layouts per event, which during a window drag is
+    /// visible thrashing. We only signal when the kernel will not.
+    fn apply_winsize(&mut self, size: (u16, u16, u16, u16)) {
+        let (c, r, x, y) = size;
+        let unchanged = self.applied_size == size;
+        let _ = self.pty.set_winsize(c, r, x, y);
+        self.applied_size = size;
+        if unchanged && self.exit_status.is_none() {
+            let pg = pty::foreground_pgrp(self.pty.master.as_raw_fd(), self.child_pid);
+            unsafe { libc::kill(-pg, libc::SIGWINCH) };
+        }
+    }
+
     fn attached_conn(&mut self) -> Option<&mut Conn> {
         let id = self.attached?;
         self.conns.iter_mut().find(|c| c.id == id)
@@ -603,19 +619,12 @@ impl Daemon {
                         // size inside its SIGWINCH handler still sees no change,
                         // which is exactly the black screen we are fixing.
                         let nudged = if rows > 1 { rows - 1 } else { rows + 1 };
-                        let _ = self.pty.set_winsize(cols, nudged, x, y);
+                        self.apply_winsize((cols, nudged, x, y));
                         self.resize_restore =
                             Some((Instant::now() + REPAINT_NUDGE, (cols, rows, x, y)));
                     } else {
                         self.resize_restore = None;
-                        let _ = self.pty.set_winsize(cols, rows, x, y);
-                    }
-
-                    // Belt and braces for apps that do repaint on a same-size
-                    // SIGWINCH, and for the normal screen where we do not nudge.
-                    if self.exit_status.is_none() {
-                        let pg = pty::foreground_pgrp(self.pty.master.as_raw_fd(), self.child_pid);
-                        unsafe { libc::kill(-pg, libc::SIGWINCH) };
+                        self.apply_winsize((cols, rows, x, y));
                     }
                 }
             }
