@@ -64,7 +64,7 @@ fn dispatch(args: Vec<String>) -> i32 {
     }
 
     match args.first().map(String::as_str) {
-        Some("--version" | "-V") => {
+        Some("--version" | "-V" | "-v") => {
             println!("spot {VERSION}");
             update::flush();
             0
@@ -316,7 +316,7 @@ OPTIONS (session creation):
 OTHER:
     spot --init              Print the shell snippet for your rc file
     spot --update            Check for and install the latest release
-    spot --version           Print version
+    spot --version, -v       Print version
 
 Inside a session, `stay` detaches it. In the picker: ↑/↓ move, enter selects,
 esc drops to the shell."

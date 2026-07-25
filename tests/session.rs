@@ -537,3 +537,16 @@ fn help_is_reachable_from_every_spelling() {
         "--help after `--` belongs to the child, got: {out}"
     );
 }
+
+#[test]
+fn version_is_reachable_from_every_spelling() {
+    let env = Env::new("version");
+    for flag in ["--version", "-V", "-v"] {
+        let (out, code) = env.run(&[flag]);
+        assert_eq!(code, 0, "{flag} should succeed, got: {out}");
+        assert!(
+            out.starts_with("spot v"),
+            "{flag} should print the version, got: {out}"
+        );
+    }
+}
