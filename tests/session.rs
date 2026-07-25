@@ -27,6 +27,7 @@ impl Env {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(SPOT, bin.join("stay")).unwrap();
+        std::os::unix::fs::symlink(SPOT, bin.join("spot")).unwrap();
         Self { dir }
     }
 
@@ -653,4 +654,88 @@ fn bare_stay_inside_a_session_reports_exactly_once() {
         "the in-session command must not add its own line: {s}"
     );
     assert!(wait_state(&env, "inside", "detached"));
+}
+
+#[test]
+fn where_reports_which_session_and_how_deep() {
+    let env = Env::new("where");
+
+    // Outside: says so, and exits non-zero so it can gate a shell conditional.
+    let (out, code) = env.run(&["where"]);
+    assert_eq!(code, 1, "outside a session `where` must exit non-zero");
+    assert!(out.contains("Not inside a spot session"), "got: {out}");
+
+    let c = PtyClient::spawn_with(
+        &env,
+        &["outer"],
+        &[("SHELL", "/bin/sh"), ("PATH", &env.path_with_stay())],
+    );
+    assert!(wait_state(&env, "outer", "attached"));
+
+    c.write(b"spot where\n");
+    let out = c.read_until(Duration::from_secs(5), |a| {
+        String::from_utf8_lossy(a).contains("Inside spot session")
+    });
+    let s = String::from_utf8_lossy(&out);
+    assert!(s.contains("Inside spot session 'outer'"), "got: {s}");
+
+    // Nest a second session inside the first, then ask again.
+    c.write(b"spot inner\n");
+    assert!(wait_state(&env, "inner", "attached"));
+    c.write(b"spot where\n");
+    let out = c.read_until(Duration::from_secs(5), |a| {
+        String::from_utf8_lossy(a).contains("sessions deep")
+    });
+    let s = String::from_utf8_lossy(&out);
+    assert!(s.contains("2 sessions deep"), "expected depth 2, got: {s}");
+    assert!(s.contains("outer") && s.contains("inner"), "got: {s}");
+    assert!(
+        s.contains("you are here"),
+        "the current layer must be marked: {s}"
+    );
+
+    // Three deep earns the Inception nod.
+    c.write(b"spot deepest\n");
+    assert!(wait_state(&env, "deepest", "attached"));
+    c.write(b"spot where\n");
+    let out = c.read_until(Duration::from_secs(5), |a| {
+        String::from_utf8_lossy(a).contains("totem")
+    });
+    let s = String::from_utf8_lossy(&out);
+    assert!(s.contains("3 sessions deep"), "got: {s}");
+    assert!(
+        s.contains("totem"),
+        "expected the totem line at depth 3, got: {s}"
+    );
+
+    for n in ["deepest", "inner", "outer"] {
+        let _ = env.run(&["drop", n, "--force"]);
+    }
+}
+
+#[test]
+fn exiting_the_shell_says_the_session_ended() {
+    // Ctrl-D is not a detach, and the difference matters: detached is still
+    // running, ended is gone.
+    let env = Env::new("ended");
+    let c = PtyClient::spawn_with(
+        &env,
+        &["bye"],
+        &[("SHELL", "/bin/sh"), ("PATH", &env.path_with_stay())],
+    );
+    assert!(wait_state(&env, "bye", "attached"));
+
+    c.write(b"exit\n");
+    let out = c.read_until(Duration::from_secs(5), |a| {
+        String::from_utf8_lossy(a).contains("ended")
+    });
+    let s = String::from_utf8_lossy(&out);
+    assert!(
+        s.contains("Session 'bye' ended"),
+        "expected an ended notice, got: {s}"
+    );
+    assert!(
+        wait_for(Duration::from_secs(5), || state_of(&env, "bye").is_none()),
+        "the session should be gone, not detached"
+    );
 }

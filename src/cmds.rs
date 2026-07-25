@@ -123,9 +123,64 @@ fn try_attach(dir: &Path, name: &str, steal: bool) -> Option<i32> {
     Some(report(client::attach(sock), name))
 }
 
+/// `spot where` — which session am I in, and how deep?
+///
+/// Exits 0 inside a session and 1 outside, so it scripts:
+/// `spot where >/dev/null && echo "in a session"`.
+pub fn where_am_i() -> i32 {
+    let stack: Vec<String> = std::env::var("SPOT_STACK")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.split(':').map(str::to_string).collect())
+        // A session created before SPOT_STACK existed still knows its own name.
+        .or_else(|| std::env::var("SPOT_SESSION").ok().map(|s| vec![s]))
+        .unwrap_or_default();
+
+    let Some(current) = stack.last() else {
+        println!("🐾 Not inside a spot session.");
+        return 1;
+    };
+
+    if stack.len() == 1 {
+        println!("🐕 Inside spot session '{current}' — `stay` detaches it.");
+        return 0;
+    }
+
+    // Nested. Show the whole chain, because "which inception am I in" is
+    // otherwise unanswerable: SPOT_SESSION only ever names the innermost.
+    println!("🪆 {} sessions deep:\n", stack.len());
+    for (i, name) in stack.iter().enumerate() {
+        if i + 1 == stack.len() {
+            println!("   {}  \x1b[1;36m{}\x1b[0m  ← you are here", i + 1, name);
+        } else {
+            println!("   {}  {}", i + 1, name);
+        }
+    }
+    println!(
+        "\n   `stay` detaches '{current}', dropping you to '{}'.",
+        stack[stack.len() - 2]
+    );
+    // 🪆 is what nesting literally *is*, but there is no spinning-top emoji, so
+    // the Inception nod goes in the copy — where a joke works better anyway.
+    if stack.len() >= 3 {
+        println!("   🌀 This deep, you may want a totem.");
+    }
+    0
+}
+
 fn report(outcome: Outcome, name: &str) -> i32 {
     match outcome {
-        Outcome::ChildExited(code) => code,
+        Outcome::ChildExited(code) => {
+            // Ctrl-D lands here. "Ended" and "detached" are very different
+            // outcomes — one is gone for good, the other is still running — and
+            // leaving the difference to silence is how you lose work.
+            if code == 0 {
+                eprintln!("🦴 Session '{name}' ended. Spot is off duty.");
+            } else {
+                eprintln!("🦴 Session '{name}' ended (exit {code}).");
+            }
+            code
+        }
         Outcome::Detached => {
             eprintln!("🦮 Detached from '{name}'. Spot will stay!");
             0

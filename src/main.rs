@@ -84,6 +84,7 @@ fn dispatch(args: Vec<String>) -> i32 {
         }
         Some("--daemon") => run_daemon(&args[1..]),
         Some("ls" | "ps") => with_dir(cmds::ls),
+        Some("where" | "pwd") => cmds::where_am_i(),
         Some("stay") => {
             let name = args.get(1).cloned();
             with_dir(|dir| {
@@ -273,12 +274,20 @@ fn run_daemon(args: &[String]) -> i32 {
     let sock = paths::runtime_dir()
         .map(|d| paths::socket_path(&d, &name))
         .unwrap_or_default();
+    // The nesting chain. The daemon inherits its spawning client's environment,
+    // so if that client was itself inside a session we are one level deeper.
+    // SPOT_SESSION names only the innermost; this remembers how we got here.
+    let stack = match std::env::var("SPOT_STACK") {
+        Ok(outer) if !outer.is_empty() => format!("{outer}:{name}"),
+        _ => name.clone(),
+    };
     let env = vec![
         (
             "SPOT_SOCKET".to_string(),
             sock.to_string_lossy().into_owned(),
         ),
         ("SPOT_SESSION".to_string(), name.clone()),
+        ("SPOT_STACK".to_string(), stack),
     ];
     daemon::run(name, program, argv, env, keep, ring, (size.0, size.1, 0, 0));
 }
@@ -306,6 +315,7 @@ USAGE:
     spot fetch <name>        Attach only; error if it does not exist
     spot stay [name]         Detach: unhook the client, leave the session running
     spot ls                  List sessions (alias: ps)
+    spot where               Which session am I in, and how deep (alias: pwd)
     spot drop <name>         Terminate a session's child process
 
 OPTIONS (session creation):

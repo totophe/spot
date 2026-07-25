@@ -5,21 +5,6 @@
 * **Distribution Package:** `spot-pity` (Debian/Ubuntu)
 * **Target Architecture:** Single Rust Binary (Linux / macOS)
 
-```text
-           ______
-          |  ||  |
-          |  ||  |     ____  ____   ___  _____
-          |==||==|    / ___||  _ \ / _ \|_   _|
-          |  ||  |    \___ \| |_) | | | | | |
-         /|  ||  |\    ___) |  __/| |_| | | |
-        | |==||==| |  |____/|_|    \___/  |_|
-        | |  ||  | |
-        | |  ||  | |   Pseudo Indestructible Terminal
-        | |==||==| |   "Yippee-ki-yay, sessions!"
-        | |  ||  | |
-       /|_|==||==|_|      |   |  ||  |   |
-      |___|__||__|___|
-```
 
 > **Mission Statement:**  
 > A zero-dependency, single-purpose PTY session guardian. `spot` sits silently beneath your terminal, shell, or multiplexer, ensuring processes survive network drops, SSH timeouts, and laptop sleeps—without stealing keystrokes or bloat.
@@ -80,6 +65,7 @@ To eliminate shortcut collisions across nested layers (SSH → `spot` → `zelli
 | **`spot fetch`** | `spot fetch <name>` | Alias for `spot attach <name>`. |
 | **`spot ls`** | `spot ls` | List active sessions, PIDs, and attach states. |
 | **`spot drop`** | `spot drop <name>` | Send `SIGTERM` to the child process and delete socket. |
+| **`spot where`** | `spot where` (alias `pwd`) | Which session am I in, and how deep. Exits 0 inside, 1 outside. |
 
 ---
 
@@ -151,9 +137,9 @@ While the top of the README pays mandatory homage to Nakatomi Plaza and John McC
 
 ### 7.1 Thematic Directives
 
-1. **The Header Homage:** The opening README section must retain the Nakatomi tower ASCII art and *"Yippee-ki-yay, sessions!"* motto as a permanent hallmark. *(Requirement: Must visually resemble a building, not a rocket launching into orbit).*
+1. **The Header Homage:** The *"Yippee-ki-yay, sessions!"* motto and the "Pseudo Indestructible Terminal" expansion are the permanent hallmark. **Amended 2026-07-25: the Nakatomi tower ASCII art is dropped.** It never stopped reading as a rocket launching into orbit rather than a building, and the joke carries fine without it. No replacement art — a README that opens on the thing itself beats one that opens on a drawing.
 2. **Dog Vocabulary in CLI & Docs:** All status messages, commands, error messages, and internal documentation should embrace guard dog terminology where natural (`stay`, `fetch`, `guarding`, `leash`, `drop`).
-3. **Emoji Integration:** CLI output should utilize minimal, expressive dog emojis to make session state immediately scannable at a glance:
+3. **Emoji Integration:** CLI output should utilize minimal, expressive dog emojis to make session state immediately scannable at a glance. (There is no spinning-top emoji for an Inception totem — 🪆 nesting dolls carries the joke and is literally what nesting means.)
 
 | Event | CLI / Log Output |
 | :--- | :--- |
@@ -162,5 +148,7 @@ While the top of the README pays mandatory homage to Nakatomi Plaza and John McC
 | **Passive Disconnect** | `🐾 Connection dropped. Session preserved in background.` |
 | **Re-attach (`fetch`)** | `🦴 Re-attached to 'dev-box'. Welcome back!` |
 | **Session Cleanup (`drop`)** | `🪦 Session 'dev-box' dropped. Socket unlinked.` |
+| **Child exited (e.g. Ctrl-D)** | `🦴 Session 'dev-box' ended. Spot is off duty.` |
+| **Nested session (`where`)** | `🪆 3 sessions deep:` |
 
 4. **Zero-Nonsense Balance:** While the theme is friendly and personality-driven, the actual PTY byte-piping logic remains hyper-efficient, silent, and reliable. Dog references exist in user-facing interactions, never blocking or slowing down raw data streams.

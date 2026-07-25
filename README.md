@@ -4,21 +4,7 @@
 [![Release](https://github.com/totophe/spot/actions/workflows/release.yml/badge.svg)](https://github.com/totophe/spot/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-```text
-           ______
-          |  ||  |
-          |  ||  |     ____  ____   ___  _____
-          |==||==|    / ___||  _ \ / _ \|_   _|
-          |  ||  |    \___ \| |_) | | | | | |
-         /|  ||  |\    ___) |  __/| |_| | | |
-        | |==||==| |  |____/|_|    \___/  |_|
-        | |  ||  | |
-        | |  ||  | |   Pseudo Indestructible Terminal
-        | |==||==| |   "Yippee-ki-yay, sessions!"
-        | |  ||  | |
-       /|_|==||==|_|      |   |  ||  |   |
-      |___|__||__|___|
-```
+**Pseudo Indestructible Terminal** — *"Yippee-ki-yay, sessions!"*
 
 > 🐕 **Spot sits, stays, and guards your shell.**
 
@@ -77,6 +63,7 @@ spot <name>              Attach to <name>, creating it if needed
 spot fetch <name>        Attach only; error if it does not exist
 spot stay [name]         Detach: unhook the client, leave the session running
 spot ls                  List sessions (alias: ps)
+spot where               Which session am I in, and how deep (alias: pwd)
 spot drop <name>         Terminate a session's child process
 ```
 
@@ -85,12 +72,16 @@ spot drop <name>         Terminate a session's child process
 actually got instead of dropping you into a look-alike shell. Use `spot fetch
 <name>` when you mean "attach or fail".
 
-The bare form is shadowed by the verbs (`ls ps stay drop fetch attach help`), so
-a session named `ls` cannot be reached as `spot ls`. Nothing becomes
+The bare form is shadowed by the verbs (`ls ps where pwd stay drop fetch attach
+help`), so a session named `ls` cannot be reached as `spot ls`. Nothing becomes
 unreachable, though — every verb takes a name, so `spot attach ls`, `spot fetch
-ls`, `spot stay ls` and `spot drop ls` all work on it. The vocabulary is fixed
-by [RFC-0001](docs/RFC-0001-spot-pty.md) §3 and will not grow, which is what
-keeps a future verb from silently stealing an existing session name.
+ls`, `spot stay ls` and `spot drop ls` all work on it.
+
+The vocabulary is defined by [RFC-0001](docs/RFC-0001-spot-pty.md) §3, and
+adding to it is a deliberate, documented change rather than a casual one —
+because a new verb silently shadows any existing session of that name in the
+bare form. `where`/`pwd` were added during the alpha for exactly one reason
+(see below) and the bar for the next one is high.
 
 ```sh
 spot dev                              # a login shell, guarded
@@ -122,20 +113,46 @@ than only telling the terminal you just let go of.
 Closing your terminal, losing WiFi, or shutting the laptop detaches too. The
 daemon notices the broken pipe and keeps the child running.
 
+Exiting the shell (Ctrl-D) is the *other* thing, and spot says so — `🦴 Session
+'dev' ended. Spot is off duty.` Detached means still running; ended means gone.
+
 ### Knowing you are inside one
 
 `spot` has no status bar — that is a multiplexer's job, and it would mean owning
-part of your screen. Every process inside a session inherits `$SPOT_SESSION`, so
-put it in your prompt:
+part of your screen. Ask instead:
 
-```sh
-# zsh
-[[ -n $SPOT_SESSION ]] && RPROMPT="%F{cyan}🐕 $SPOT_SESSION%f $RPROMPT"
+```console
+$ spot where
+🐕 Inside spot session 'dev' — `stay` detaches it.
 ```
 
-Worth doing early. Sessions nest deliberately — running `spot other` inside a
-session gives you a session inside a session, with `stay` detaching the inner
-one — and without a prompt marker the two are indistinguishable.
+Sessions nest deliberately: running `spot other` from inside one gives you a
+session inside a session, and `stay` detaches the innermost. `spot where` is how
+you tell which layer you are on, because `$SPOT_SESSION` only ever names the
+innermost:
+
+```console
+$ spot where
+🪆 3 sessions deep:
+
+   1  outer
+   2  middle
+   3  inner  ← you are here
+
+   `stay` detaches 'inner', dropping you to 'middle'.
+```
+
+It exits 0 inside a session and 1 outside, so it scripts:
+`spot where >/dev/null && echo "in a session"`.
+
+For a permanent marker, every process inside inherits `$SPOT_SESSION`
+(innermost) and `$SPOT_STACK` (the full `outer:middle:inner` chain):
+
+```sh
+# zsh — put this at the END of ~/.zshrc, after your theme loads, since
+# powerlevel10k and friends set RPROMPT themselves and would overwrite it.
+[[ -n $SPOT_SESSION ]] && RPROMPT="%F{cyan}🐕 $SPOT_SESSION%f $RPROMPT"
+```
 
 > Typing `stay` inside a **dev container** does not work and is out of scope:
 > `docker exec` does not carry host environment, and the socket path is a host
