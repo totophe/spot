@@ -383,8 +383,8 @@ impl Daemon {
                             c.out.clear();
                             let restore = self.modes.restore_sequence();
                             c.queue_output(&restore);
-                            if !self.modes.alt_screen() {
-                                let ring = self.ring.contents();
+                            let ring = self.ring.contents();
+                            if !self.modes.alt_screen() && !crate::ring::repaints_screen(&ring) {
                                 c.queue_output(&ring);
                             }
                         } else {
@@ -613,7 +613,7 @@ impl Daemon {
                     // enough: zellij (and others) read the size, see no change,
                     // and do nothing — leaving you looking at a black screen.
                     // Force a genuine change so the repaint is unavoidable.
-                    if repaint && self.modes.alt_screen() && self.exit_status.is_none() {
+                    if repaint && self.exit_status.is_none() {
                         // The wrong size has to *linger*. Setting it and putting
                         // it back immediately is useless: an app that reads the
                         // size inside its SIGWINCH handler still sees no change,
@@ -681,15 +681,20 @@ impl Daemon {
         }
 
         let restore = self.modes.restore_sequence();
-        let replay = if self.modes.alt_screen() {
-            // A full-screen application will repaint completely on the SIGWINCH
-            // that follows, so replaying its paint bytes would be garbage that
-            // gets overwritten. Skip it.
+        let ring = self.ring.contents();
+        // Does the child own the screen? If so it repaints on resize, and the
+        // right thing to send is nothing at all. Alternate screen is one signal
+        // but not the only one: `top` and `htop` paint full screens without it.
+        let paints = self.modes.alt_screen() || crate::ring::repaints_screen(&ring);
+        let replay = if paints {
+            // It will repaint completely once it hears the size changed, so
+            // anything replayed here is a stale frame about to be overdrawn.
             Vec::new()
         } else {
             // A shell or line-oriented program: the replay *is* the context the
             // user left behind, and SIGWINCH will do nothing for them.
-            self.ring.contents()
+            //
+            ring.clone()
         };
         let dead_status = self.exit_status;
         let keep = self.keep_on_exit;
@@ -708,7 +713,7 @@ impl Daemon {
             }
         }
         self.served_attach = true;
-        self.pending_repaint = true;
+        self.pending_repaint = paints;
         self.linger_until = None;
         if dead_status.is_some() && keep {
             // A DEAD session is reaped by the attach that collects its status.

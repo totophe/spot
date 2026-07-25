@@ -182,13 +182,24 @@ individually is specified but not implemented in this alpha.
 
 The rule that keeps this child-agnostic:
 
-> **If the alternate screen is active at reattach, the replay is skipped.**
+> **If the child paints the screen, spot sends it nothing and lets it repaint.**
 
-An app in the alternate screen is a full-screen TUI: it repaints completely on
-the `SIGWINCH`, so replaying its raw paint bytes would be garbage that gets
-overwritten. An app *not* in the alternate screen is a shell or a build log,
-where the replay is exactly what you want and `SIGWINCH` does nothing. `spot`
-decides from the mode, never from guessing what it is running.
+A program that owns the screen redraws it once told the size changed, so
+anything replayed is a stale frame it is about to overdraw — and several of
+those stacked is what produces repeated footers and torn rows. A program that
+paints nothing, like a shell, will never redraw itself, so its scrollback is the
+only context there is and the replay is the whole point.
+
+"Owns the screen" is not the same as "uses the alternate screen". `top` and
+`htop` paint full screens without ever entering it: they home the cursor and
+overdraw in place. So the signal is absolute cursor addressing — a clear, or a
+home to the top-left. Line-oriented output never homes the cursor, because a
+prompt that jumped to the corner of the screen would be unusable.
+
+The question is asked of the replay buffer rather than tracked as a flag, which
+makes it self-expiring: quit `top`, and once its frames age out of the buffer
+the session counts as line-oriented again. `spot` never guesses what it is
+running — only whether the bytes coming out of it paint.
 
 ### The garbled-terminal problem
 

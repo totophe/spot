@@ -394,10 +394,10 @@ where `SIGWINCH` does nothing.
 
 So the two cases resolve cleanly and neither needs to know what the child is:
 
-| Child state at reattach | Layer 1 | Layer 2 | Layer 3 | Result |
+| Child at reattach | Layer 1 | Layer 2 | Layer 3 | Result |
 |---|---|---|---|---|
-| alt screen (nvim, zellij, less) | modes restored | **skipped** | repaint | clean full redraw |
-| normal screen (shell, build log) | modes restored | replay | no-op | context preserved |
+| paints the screen (nvim, zellij, `top`, `htop`, `less`) | modes restored | **skipped** | forced resize | clean full redraw |
+| paints nothing (shell, build log) | modes restored | replay | no-op | context preserved |
 
 `--redraw modes,replay,winch` / `--redraw none` for anyone who disagrees.
 
