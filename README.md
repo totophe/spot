@@ -55,6 +55,23 @@ scripted SSH keep working untouched.
 | `SPOT_INSTALL_DIR` | `~/.local/bin` | where to put the binary |
 | `SPOT_VERSION` | `latest` | install a specific tag, e.g. `v0.1.0` |
 
+### Uninstall
+
+```sh
+spot --uninstall --dry-run   # show exactly what would go
+spot --uninstall
+```
+
+It removes the `--init` block from your shell rc, the `stay` symlink and the
+binary itself. Every rc it edits is backed up alongside as `<file>.spot-backup`
+first, only the exact guarded block is touched, and a hand-mangled block with a
+missing end marker is reported rather than guessed at. It refuses while sessions
+are still running, since those would outlive the binary with nothing left to
+reach them — `--force` if you mean it.
+
+A tool that edits your shell rc on the way in should be able to take itself back
+out.
+
 ## Usage
 
 ```

@@ -851,3 +851,121 @@ fn reattaching_forces_a_full_screen_app_to_repaint() {
 
     let _ = env.run(&["drop", "tui", "--force"]);
 }
+
+/// A throwaway `spot` binary plus a fake HOME, so uninstall can delete a real
+/// executable without eating the one the rest of the suite is running.
+/// A symlink would not do: `current_exe` resolves it back to the original.
+fn sandbox_install(env: &Env) -> (PathBuf, PathBuf) {
+    let bin_dir = env.dir.join("ubin");
+    let fake_home = env.dir.join("fakehome");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::create_dir_all(&fake_home).unwrap();
+    let bin = bin_dir.join("spot");
+    std::fs::copy(SPOT, &bin).unwrap();
+    std::os::unix::fs::symlink("spot", bin_dir.join("stay")).unwrap();
+    (bin, fake_home)
+}
+
+#[test]
+fn uninstall_removes_the_rc_snippet_the_link_and_the_binary() {
+    let env = Env::new("uninstall");
+    let (bin, home) = sandbox_install(&env);
+
+    // Install exactly what `--init` emits, surrounded by config worth keeping.
+    let snippet = String::from_utf8(
+        std::process::Command::new(&bin)
+            .arg("--init")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let rc = home.join(".zshrc");
+    std::fs::write(
+        &rc,
+        format!("export PATH=/x\n{snippet}\nalias ll='ls -l'\n"),
+    )
+    .unwrap();
+
+    // Dry run must change nothing.
+    let before = std::fs::read_to_string(&rc).unwrap();
+    let out = std::process::Command::new(&bin)
+        .args(["--uninstall", "--dry-run"])
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &env.dir)
+        .output()
+        .unwrap();
+    let msg = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        msg.contains("would remove"),
+        "dry run should preview: {msg}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&rc).unwrap(),
+        before,
+        "dry run wrote"
+    );
+    assert!(bin.exists(), "dry run deleted the binary");
+
+    // The real thing.
+    let out = std::process::Command::new(&bin)
+        .arg("--uninstall")
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &env.dir)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let after = std::fs::read_to_string(&rc).unwrap();
+    assert!(!after.contains("spot"), "snippet not removed: {after:?}");
+    assert!(after.contains("export PATH=/x"), "ate surrounding config");
+    assert!(after.contains("alias ll='ls -l'"), "ate surrounding config");
+    assert!(
+        home.join(".zshrc.spot-backup").exists(),
+        "an rc edit must leave a backup"
+    );
+    assert!(!bin.exists(), "binary should be gone");
+    assert!(
+        !bin.parent().unwrap().join("stay").exists(),
+        "stay symlink should be gone"
+    );
+}
+
+#[test]
+fn uninstall_refuses_while_sessions_are_running() {
+    let env = Env::new("uninstallbusy");
+    let (bin, home) = sandbox_install(&env);
+    let _c = PtyClient::spawn(&env, &["keepme", "--", "sleep", "300"]);
+    assert!(wait_state(&env, "keepme", "attached"));
+
+    let out = std::process::Command::new(&bin)
+        .arg("--uninstall")
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &env.dir)
+        .output()
+        .unwrap();
+    let msg = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(1), "should refuse: {msg}");
+    assert!(msg.contains("keepme"), "should name the session: {msg}");
+    assert!(bin.exists(), "must not have removed anything");
+
+    // --force overrides.
+    let out = std::process::Command::new(&bin)
+        .args(["--uninstall", "--force"])
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &env.dir)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!bin.exists(), "--force should have uninstalled");
+}

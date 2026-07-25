@@ -15,6 +15,7 @@ mod proto;
 mod pty;
 mod ring;
 mod term;
+mod uninstall;
 mod update;
 
 use cmds::Options;
@@ -76,6 +77,16 @@ fn dispatch(args: Vec<String>) -> i32 {
         Some("--init") => {
             print_shell_init();
             0
+        }
+        Some("--uninstall") => {
+            let dry = args.iter().any(|a| a == "--dry-run" || a == "-n");
+            let force = args.iter().any(|a| a == "--force" || a == "-f");
+            // Running sessions would outlive the binary with nothing left to
+            // reach them, so they are worth stopping for.
+            let running: Vec<String> = paths::runtime_dir()
+                .map(|d| cmds::sessions(&d).into_iter().map(|s| s.name).collect())
+                .unwrap_or_default();
+            uninstall::run(dry, force, &running)
         }
         Some("--update") => update::run_foreground(VERSION),
         Some("--self-update-bg") => {
@@ -337,6 +348,8 @@ OPTIONS (session creation):
 
 OTHER:
     spot --init              Print the shell snippet for your rc file
+    spot --uninstall         Remove the rc snippet, the `stay` link and the binary
+                             (--dry-run to preview, --force if sessions are running)
     spot --update            Check for and install the latest release
     spot --version, -v       Print version
 
