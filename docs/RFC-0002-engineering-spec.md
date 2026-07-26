@@ -669,7 +669,7 @@ command-based-detach decision. These specific points are superseded:
 
 ---
 
-## 14.1 Implementation status and deviations (v0.1.0 alpha)
+## 14.1 Implementation status and deviations (v0.0.1)
 
 M0, M1 and M2 are implemented. Where the code departs from the spec above, the
 code is right and this section records why.

@@ -12,8 +12,9 @@ A single-purpose PTY session guardian. `spot` sits silently beneath your
 terminal, shell, or multiplexer, keeping processes alive across network drops,
 SSH timeouts and laptop sleeps — without stealing keystrokes.
 
-**Status: alpha.** The core works and is covered by tests, but it has not yet
-been lived in for a week. See [Known limits](#known-limits).
+**Status: v0.0.1, early.** The core works and is covered by tests, and it has
+been used on real hardware — but not for long, and there is an open report worth
+knowing about before you rely on it. See [Known limits](#known-limits).
 
 ## What it is, and is not
 
@@ -53,7 +54,7 @@ scripted SSH keep working untouched.
 | Variable | Default | Purpose |
 |---|---|---|
 | `SPOT_INSTALL_DIR` | `~/.local/bin` | where to put the binary |
-| `SPOT_VERSION` | `latest` | install a specific tag, e.g. `v0.1.0` |
+| `SPOT_VERSION` | `latest` | install a specific tag, e.g. `v0.0.1` |
 
 ### Uninstall
 
@@ -265,7 +266,13 @@ the last session ends `spot` leaves nothing behind but its own binary.
 
 ## Known limits
 
-- **Alpha.** Tested, but not yet battle-worn.
+- **Open report: reattaching into `nvim` came back black** on one machine, with
+  <kbd>Esc</kbd> redrawing part of the screen. Not reproducible here across five
+  detach/resize combinations against a stock `nvim -u NONE`, so it is likely
+  config- or terminal-specific — but it is the headline feature, so treat it as
+  unresolved. `scripts/capture-reattach.sh <session>` records what spot actually
+  sent, which distinguishes "spot sent no repaint" from "the app ignored one".
+- **Early.** Tested, but not yet battle-worn.
 - Intel macOS is not published. Releases cover Linux x86_64/aarch64 and Apple
   Silicon; the Intel runner pool stalls badly enough to block releases, the same
   call `tmosh` made. Build from source there.

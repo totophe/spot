@@ -115,7 +115,7 @@ When enabled, the client wraps `stdin` in a state machine watching for the trigg
 # Cargo.toml (Packaging Metadata)
 [package]
 name = "spot"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 
 [package.metadata.deb]
