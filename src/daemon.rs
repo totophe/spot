@@ -149,6 +149,11 @@ pub fn run(
             d.cleanup();
             std::process::exit(0);
         }
+        // Losing the creation race is benign: the winner is serving this name,
+        // and the client polling for the socket will find it. Exit quietly
+        // rather than leaving an error file that would make the client report a
+        // failure for a session that is up.
+        Err(e) if e.kind() == ErrorKind::AddrInUse => std::process::exit(0),
         Err(e) => fail_early(Some((&dir, &name)), &e.to_string()),
     }
 }
@@ -198,6 +203,15 @@ fn start(
     pty::set_nonblocking(pty.master.as_raw_fd())?;
 
     let sock = paths::socket_path(dir, &name);
+    // Belt and braces for the creation race: if someone is already listening we
+    // lost it, and unlinking their socket to bind our own would leave them
+    // running and unreachable. The lock should prevent getting here at all.
+    if UnixStream::connect(&sock).is_ok() {
+        return Err(std::io::Error::new(
+            ErrorKind::AddrInUse,
+            format!("'{name}' is already running"),
+        ));
+    }
     let _ = fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock)?;
     listener.set_nonblocking(true)?;

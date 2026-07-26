@@ -991,3 +991,83 @@ fn self_groups_the_lifecycle_commands() {
         assert!(out.contains("unknown option"), "{old}: {out}");
     }
 }
+
+/// Daemons currently running for `name`, matched on exact argv rather than a
+/// string search — a `pgrep -f` pattern also matches the shell that ran it, and
+/// any leftover from another run, which is how this check first lied to me.
+#[cfg(target_os = "linux")]
+fn daemon_count(name: &str) -> usize {
+    let mut n = 0;
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return 0;
+    };
+    for e in entries.flatten() {
+        let Ok(raw) = std::fs::read(e.path().join("cmdline")) else {
+            continue;
+        };
+        let argv: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
+        if argv.len() > 2
+            && argv[0].ends_with(b"spot")
+            && argv[1] == b"--daemon"
+            && argv[2] == name.as_bytes()
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn concurrent_creates_produce_exactly_one_daemon() {
+    // RFC-0002 §1.2: the creation lock serialises racing clients and the loser
+    // attaches to the winner. It did not. `cleanup()` unlinked the lock file on
+    // every failed connect, so a racing client could destroy the inode another
+    // was holding, take an uncontended lock on a fresh one, and start a second
+    // daemon — leaving one running with a child nothing could reach.
+    //
+    // Intermittent: it reproduced roughly one run in four before the fix.
+    let env = Env::new("race");
+
+    // The window is narrow, so one round catches it only ~1 time in 5. Several
+    // rounds make the guard worth having; each uses a fresh name so a surviving
+    // daemon can never be attributed to the wrong round.
+    for round in 0..5 {
+        // Unique per test process too, so a leftover from another run or
+        // another test cannot be counted as ours.
+        let name = format!("contended{}r{round}", std::process::id());
+
+        let mut racers = Vec::new();
+        for _ in 0..8 {
+            racers.push(
+                env.cmd()
+                    .args([&name, "--", "sleep", "31337"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+        }
+        for mut r in racers {
+            let _ = r.wait();
+        }
+
+        assert_eq!(
+            daemon_count(&name),
+            1,
+            "round {round}: eight racing clients must leave exactly one daemon"
+        );
+        assert_eq!(
+            state_of(&env, &name).as_deref(),
+            Some("detached"),
+            "round {round}: the one session should be listed and unattached"
+        );
+
+        let _ = env.run(&["drop", &name, "--force"]);
+        assert!(
+            wait_for(Duration::from_secs(5), || daemon_count(&name) == 0),
+            "round {round}: dropping the session must account for every daemon"
+        );
+    }
+}

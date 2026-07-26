@@ -34,6 +34,12 @@ case "$arch" in
   aarch64|arm64) arch_part="aarch64" ;;
   *) err "unsupported architecture: $arch" ;;
 esac
+
+# Say so plainly rather than letting the download 404: releases do not include
+# Intel macOS, because that runner pool stalls badly enough to block them.
+if [ "$os" = "Darwin" ] && [ "$arch_part" = "x86_64" ]; then
+  err "Intel macOS has no published build — install a Rust toolchain and \`cargo build --release\`"
+fi
 asset="spot-${arch_part}-${os_part}"
 
 # --- resolve version -------------------------------------------------------

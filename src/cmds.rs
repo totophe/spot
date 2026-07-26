@@ -54,17 +54,45 @@ pub fn parse_status(line: &str) -> Option<Status> {
     })
 }
 
-/// Every live session, stale sockets cleaned up along the way.
+/// Every live session, stale sockets reaped along the way.
 pub fn sessions(dir: &Path) -> Vec<Status> {
     let mut out = Vec::new();
     for name in paths::list_names(dir).unwrap_or_default() {
-        if let Some(line) = client::probe(dir, &name) {
-            if let Some(s) = parse_status(&line) {
-                out.push(s);
+        match client::probe(dir, &name) {
+            Some(line) => {
+                if let Some(s) = parse_status(&line) {
+                    out.push(s);
+                }
             }
+            None => reap_stale(dir, &name),
         }
     }
     out
+}
+
+/// Remove a socket left behind by a daemon that died without cleaning up.
+///
+/// Takes the creation lock and re-probes before unlinking. Without that, this
+/// races a daemon that is starting up: the first probe fails because the socket
+/// does not exist yet, and by the time we unlink, the new daemon has created it
+/// — leaving it running with no socket, unreachable, while another daemon takes
+/// its place. Holding the lock makes "is it dead?" and "remove it" one step,
+/// because a starting daemon's client holds that same lock.
+fn reap_stale(dir: &Path, name: &str) {
+    let Ok(lock) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(paths::lock_path(dir, name))
+    else {
+        return;
+    };
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } < 0 {
+        return;
+    }
+    if client::probe(dir, name).is_none() {
+        paths::cleanup(dir, name);
+    }
 }
 
 /// Attach to `name`, creating the session if it does not exist.

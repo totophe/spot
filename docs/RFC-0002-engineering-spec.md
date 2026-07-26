@@ -683,7 +683,7 @@ code is right and this section records why.
 | §9 opt-in `--escape` | Not implemented | Deferred: the default path is byte-transparent, which is what matters. Nothing else depends on it |
 | §8 `spot ls` shows attached sessions marked | Done — but the **picker** hides them, since they cannot be attached | As noted in §8, the two want opposite things |
 
-Verified by the test suite (34 unit + 12 integration, all green):
+Verified by the test suite (41 unit + 27 integration, all green):
 
 * All 256 byte values survive a round trip, `0x02` included.
 * `SIGKILL` on the client leaves the child running and flips the session to
@@ -693,6 +693,34 @@ Verified by the test suite (34 unit + 12 integration, all green):
   detach — the partial-cleanup regression test.
 * A normal-screen session replays its context; an alt-screen session does not.
 * Exit status propagates, `--keep-on-exit` holds it, stale sockets are reaped.
+
+### Two concurrency bugs found by a pre-release audit (2026-07-26)
+
+Both are the same defect in two places: **treating "connect failed" as proof
+that a file is stale.** It is a time-of-check/time-of-use error — the connect
+can fail because the thing does not exist *yet*, and by the time you act it
+does, so you destroy something live.
+
+1. `cleanup()` unlinked the **lock file**. Mutual exclusion lives in the lock's
+   *inode*, so removing it while another client held `flock` let the next client
+   take an uncontended lock on a fresh inode and start a second daemon.
+   Reproduced ~1 run in 4 with six racing clients.
+2. `cleanup()` unlinked the **socket**, called from `client::connect` on every
+   failed connect. A client whose connect failed a moment before a daemon bound
+   would unlink that daemon's live socket, leaving it running and unreachable
+   while another daemon bound in its place. This survived fix 1 and was only
+   caught by tracing: the log showed daemon A `BOUND` and client B still
+   reporting `probe->NOTHING` immediately after.
+
+Fix: clients never unlink. Reaping moved to `cmds::reap_stale`, which takes the
+creation lock and re-probes before removing, making "is it dead?" and "remove
+it" a single step against a starting daemon's client, which holds that same
+lock.
+
+Measurement note: the first attempt to count daemons used `pgrep -f`, which also
+matched the shell running the test and leftovers from earlier experiments, and
+reported three daemons where there was one. The regression test now matches
+exact `argv` and uses a session name unique to the test process.
 
 Two bugs the tests caught that review had not:
 

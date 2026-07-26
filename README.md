@@ -266,6 +266,9 @@ the last session ends `spot` leaves nothing behind but its own binary.
 ## Known limits
 
 - **Alpha.** Tested, but not yet battle-worn.
+- Intel macOS is not published. Releases cover Linux x86_64/aarch64 and Apple
+  Silicon; the Intel runner pool stalls badly enough to block releases, the same
+  call `tmosh` made. Build from source there.
 - The reattach repaint briefly resizes the terminal by one row. Full-screen apps
   reflow through it; it reads as part of the redraw.
 - `TERM` is fixed when the session is created. Reattaching from a terminal with
@@ -289,7 +292,7 @@ the last session ends `spot` leaves nothing behind but its own binary.
 ```sh
 cargo build --release
 ./target/release/spot --help
-cargo test --all          # 34 unit + 12 integration tests
+cargo test --all          # 41 unit + 27 integration tests
 ```
 
 The integration tests drive the real binary through a real PTY, because every

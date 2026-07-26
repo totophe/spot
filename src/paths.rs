@@ -108,13 +108,23 @@ pub fn list_names(dir: &Path) -> io::Result<Vec<String>> {
     Ok(out)
 }
 
-/// Remove a session's leftovers. Only ever called once a connect attempt has
-/// proved no daemon is listening — a live daemon and a stale file are
-/// indistinguishable by `stat`, and unlinking the wrong one orphans a session.
+/// Remove a session's leftovers.
+///
+/// Callers must hold the creation lock (see `reap_stale`). Unlinking a socket
+/// because a *previous* connect failed is a time-of-check/time-of-use bug: the
+/// socket may have been created in between, and removing a live one orphans a
+/// running daemon.
+///
+/// **The lock file is deliberately never removed.** It is a mutex, not session
+/// state, and mutual exclusion lives in its *inode*: unlinking it while another
+/// client holds `flock` on it lets the next client create a fresh file, take an
+/// uncontended lock on a different inode, and start a second daemon for the
+/// same name. That is exactly what happened — a concurrent create produced
+/// three daemons, two of them orphaned with unreachable children. A stray empty
+/// lock file in a tmpfs runtime dir costs nothing by comparison.
 pub fn cleanup(dir: &Path, name: &str) {
     let _ = fs::remove_file(socket_path(dir, name));
     let _ = fs::remove_file(err_path(dir, name));
-    let _ = fs::remove_file(lock_path(dir, name));
 }
 
 /// Short, memorable default session names (adjective-noun), in the style of

@@ -23,19 +23,16 @@ pub enum Outcome {
     Error(String),
 }
 
-/// Connect and complete the handshake. Returns `Ok(None)` when no daemon is
-/// listening (the socket is stale), having cleaned up after it.
+/// Connect and complete the handshake. `Ok(None)` means nothing is listening.
 pub fn connect(dir: &Path, name: &str, role: u8, flags: u8) -> std::io::Result<Option<UnixStream>> {
     let sock = paths::socket_path(dir, name);
-    match connect_at(&sock, role, flags)? {
-        Some(s) => Ok(Some(s)),
-        None => {
-            // Only now is it safe to unlink: a live daemon and a stale file look
-            // identical to `stat`, and unlinking the wrong one orphans a session.
-            paths::cleanup(dir, name);
-            Ok(None)
-        }
-    }
+    // Deliberately does NOT unlink on failure. "Connect failed, therefore the
+    // socket is stale" is a time-of-check/time-of-use bug: the connect can fail
+    // because the socket does not exist *yet*, and by the time we act a daemon
+    // has created it — so we would unlink a live one, orphaning it. That is
+    // exactly what happened in a creation race. Reaping is `reap_stale`'s job,
+    // and it holds the lock while it does it.
+    connect_at(&sock, role, flags)
 }
 
 /// Connect to an explicit socket path — the `$SPOT_SOCKET` route used by `stay`.
