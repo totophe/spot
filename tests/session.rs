@@ -1071,3 +1071,32 @@ fn concurrent_creates_produce_exactly_one_daemon() {
         );
     }
 }
+
+#[test]
+fn drop_does_not_leave_a_corpse_lingering() {
+    // A daemon whose child exits before anyone attached lingers briefly so the
+    // creating client can still collect the exit status. An explicit `drop` is
+    // the opposite instruction, and lingering there left a `dead:` entry in
+    // `ls` for ten seconds after the user said to kill it.
+    let env = Env::new("dropclean");
+    // Never attached: the client cannot, with no tty.
+    let out = env
+        .cmd()
+        .args(["ghost", "--", "sleep", "300"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+        .wait();
+    assert!(out.is_ok());
+    assert!(wait_state(&env, "ghost", "detached"));
+
+    let (msg, code) = env.run(&["drop", "ghost", "--force"]);
+    assert_eq!(code, 0, "{msg}");
+    assert!(
+        wait_for(Duration::from_secs(3), || state_of(&env, "ghost").is_none()),
+        "dropped session should be gone at once, not linger as {:?}",
+        state_of(&env, "ghost")
+    );
+}

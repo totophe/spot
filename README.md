@@ -298,6 +298,17 @@ cargo test --all          # 41 unit + 27 integration tests
 The integration tests drive the real binary through a real PTY, because every
 interesting failure here lives in the parts a unit test cannot see.
 
+Whether a reattach *looks* right is a judgement a harness cannot make, so the
+manual matrix ([RFC-0002](docs/RFC-0002-engineering-spec.md) §13) is a script:
+
+```sh
+./scripts/manual-reattach-test.sh            # nvim
+APP=htop ./scripts/manual-reattach-test.sh   # or any full-screen app
+```
+
+It drives the mechanical half — create, detach, SIGKILL the client, reattach,
+check session state — and asks you to judge only the screen.
+
 Dependencies: `libc`. That is the whole list.
 
 ## Releases & CI

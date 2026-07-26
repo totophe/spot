@@ -117,6 +117,8 @@ pub struct Daemon {
     /// While shutting down before anyone ever attached, how long to hold on so
     /// the creating client can still collect the exit status.
     linger_until: Option<Instant>,
+    /// Set when the child was killed by an explicit `spot drop`.
+    dropped: bool,
     sig_read: RawFd,
 }
 
@@ -251,6 +253,7 @@ fn start(
         resize_restore: None,
         applied_size: winsize,
         linger_until: None,
+        dropped: false,
         sig_read: pipe.read,
     })
 }
@@ -467,7 +470,7 @@ impl Daemon {
         }
         if !self.keep_on_exit {
             self.shutting_down = true;
-            if !self.served_attach {
+            if !self.served_attach && !self.dropped {
                 self.linger_until = Some(Instant::now() + LINGER_FOR_FIRST_ATTACH);
             }
         }
@@ -652,6 +655,10 @@ impl Daemon {
             }
             T_SIGNAL => {
                 let signo = f.payload.first().copied().unwrap_or(libc::SIGTERM as u8);
+                // An explicit `drop` means "make it go away". Holding the corpse
+                // around to report an exit status nobody asked for just leaves a
+                // `dead:` entry in `ls` for ten seconds.
+                self.dropped = true;
                 self.terminate_child(signo as libc::c_int);
                 if self.keep_on_exit && self.exit_status.is_some() {
                     // Reaping a DEAD session.
