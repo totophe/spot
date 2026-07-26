@@ -17,7 +17,7 @@ set -u
 
 APP="${APP:-nvim}"
 APP_BIN="${APP%% *}"
-SESSION="rtest$$"
+SESSION="${SESSION:-rtest$$}"
 SCRATCH="/tmp/spot-rtest-$$"
 PIDFILE="$SCRATCH/client.pid"
 PASS=0
@@ -72,9 +72,18 @@ check_state() { # check_state expected label
   fi
 }
 
+COMPLETED=0
 cleanup() {
-  "$SPOT" drop "$SESSION" --force >/dev/null 2>&1
-  rm -rf "$SCRATCH"
+  # Only reap the session if the run finished. An interrupted run leaves it
+  # alive on purpose: it is the state worth inspecting, and dropping it would
+  # destroy the evidence.
+  if [ "$COMPLETED" = 1 ]; then
+    "$SPOT" drop "$SESSION" --force >/dev/null 2>&1
+    rm -rf "$SCRATCH"
+  else
+    printf '\n\033[90mSession %s left running for inspection:\n  %s ls\n  %s fetch %s\n  %s drop %s --force\033[0m\n' \
+      "$SESSION" "$SPOT" "$SPOT" "$SESSION" "$SPOT" "$SESSION"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -91,6 +100,7 @@ clear
 bold "spot manual reattach test — $APP"
 dim  "binary:  $SPOT"
 dim  "session: $SESSION   scratch: $SCRATCH"
+dim  "interrupted? re-run with SESSION=$SESSION to pick the same session back up"
 echo
 dim  "Judge the SCREEN; the script checks session state itself."
 pause
@@ -147,8 +157,11 @@ cat <<EOF
   This is the case spot exists for: the client dies without any chance to tidy
   up, exactly as when WiFi drops or a laptop lid closes.
 
+  >>> Do NOT close the terminal. The script does the killing for you. <<<
+  Closing the tab kills the script too, since it is running in this terminal.
+
   You will be reattached, and after 15 seconds the client is killed from
-  underneath you. Your shell prompt should come back abruptly.
+  underneath you. Your shell prompt should come back abruptly, on its own.
 EOF
 pause
 ( sleep 15; [ -f "$PIDFILE" ] && kill -9 "$(cat "$PIDFILE")" 2>/dev/null ) &
@@ -199,6 +212,7 @@ ask "Did you get the 'ended' message (not 'detached')?"
 
 # =============================================================================
 echo
+COMPLETED=1
 bold "----------------------------------------"
 printf 'passed: \033[32m%s\033[0m   failed: \033[31m%s\033[0m\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
