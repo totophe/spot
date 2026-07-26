@@ -58,8 +58,8 @@ scripted SSH keep working untouched.
 ### Uninstall
 
 ```sh
-spot --uninstall --dry-run   # show exactly what would go
-spot --uninstall
+spot self uninstall --dry-run   # show exactly what would go
+spot self uninstall
 ```
 
 It removes the `--init` block from your shell rc, the `stay` symlink and the
@@ -82,6 +82,8 @@ spot stay [name]         Detach: unhook the client, leave the session running
 spot ls                  List sessions (alias: ps)
 spot where               Which session am I in, and how deep (alias: pwd)
 spot drop <name>         Terminate a session's child process
+spot self update         Install the latest release
+spot self uninstall      Remove spot entirely (--dry-run to preview)
 ```
 
 `spot <name>` creates the session if it does not exist, and announces it —
@@ -90,7 +92,7 @@ actually got instead of dropping you into a look-alike shell. Use `spot fetch
 <name>` when you mean "attach or fail".
 
 The bare form is shadowed by the verbs (`ls ps where pwd stay drop fetch attach
-help`), so a session named `ls` cannot be reached as `spot ls`. Nothing becomes
+self help`), so a session named `ls` cannot be reached as `spot ls`. Nothing becomes
 unreachable, though — every verb takes a name, so `spot attach ls`, `spot fetch
 ls`, `spot stay ls` and `spot drop ls` all work on it.
 
@@ -301,7 +303,7 @@ Dependencies: `libc`. That is the whole list.
   push and PR.
 - **Release** triggers on a `v*` tag, cross-builds Linux (x86_64, aarch64) and
   macOS (aarch64), and publishes them plus `SHA256SUMS` as release assets — what
-  `install.sh` and `spot --update` download.
+  `install.sh` and `spot self update` download.
 
 See [RELEASING.md](RELEASING.md) for the checklist.
 

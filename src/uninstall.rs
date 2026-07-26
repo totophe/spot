@@ -1,4 +1,4 @@
-//! `spot --uninstall` — undo everything `install.sh` and `--init` did.
+//! `spot self uninstall` — undo everything `install.sh` and `--init` did.
 //!
 //! The counterpart to `--init`. A tool that edits your shell rc on the way in
 //! should be able to take itself back out; leaving people to find and delete a

@@ -578,7 +578,7 @@ Inherited wholesale from `tmosh`; this is the layer that already exists as worki
 * `spot` with no arguments runs the picker: attachable (detached) sessions, "+ new
   session", "shell (no spot)". <kbd>Esc</kbd>/<kbd>q</kbd>/<kbd>Ctrl-C</kbd> is always
   the escape hatch. `tmosh/src/menu.rs` ports essentially unchanged.
-* `spot --update` / background throttled check: `tmosh/src/update.rs` ports unchanged
+* `spot self update` / background throttled check: `tmosh/src/update.rs` ports unchanged
   bar the repo constant and asset prefix.
 
 ---

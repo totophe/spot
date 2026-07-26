@@ -78,21 +78,10 @@ fn dispatch(args: Vec<String>) -> i32 {
             print_shell_init();
             0
         }
-        Some("--uninstall") => {
-            let dry = args.iter().any(|a| a == "--dry-run" || a == "-n");
-            let force = args.iter().any(|a| a == "--force" || a == "-f");
-            // Running sessions would outlive the binary with nothing left to
-            // reach them, so they are worth stopping for.
-            let running: Vec<String> = paths::runtime_dir()
-                .map(|d| cmds::sessions(&d).into_iter().map(|s| s.name).collect())
-                .unwrap_or_default();
-            uninstall::run(dry, force, &running)
-        }
-        Some("--update") => update::run_foreground(VERSION),
-        Some("--self-update-bg") => {
-            update::run_background(VERSION);
-            0
-        }
+        // Lifecycle lives under `self`, rustup-style: updating and uninstalling
+        // are actions, not modifiers on the primary one. Grouping them reserves
+        // a single word in the session namespace instead of one per verb.
+        Some("self") => dispatch_self(&args[1..]),
         Some("--daemon") => run_daemon(&args[1..]),
         Some("ls" | "ps") => with_dir(cmds::ls),
         Some("where" | "pwd") => cmds::where_am_i(),
@@ -160,6 +149,45 @@ fn first_positional(args: &[String]) -> Option<String> {
         .skip(1)
         .find(|a| !a.starts_with('-'))
         .map(|a| a.to_string())
+}
+
+/// `spot self <update|uninstall>` — the tool's own lifecycle.
+fn dispatch_self(rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("update") => {
+            // `--background` is the internal spawn from the throttled check.
+            if rest.iter().any(|a| a == "--background") {
+                update::run_background(VERSION);
+                0
+            } else {
+                update::run_foreground(VERSION)
+            }
+        }
+        Some("uninstall") => {
+            let dry = rest.iter().any(|a| a == "--dry-run" || a == "-n");
+            let force = rest.iter().any(|a| a == "--force" || a == "-f");
+            // Running sessions would outlive the binary with nothing left to
+            // reach them, so they are worth stopping for.
+            let running: Vec<String> = paths::runtime_dir()
+                .map(|d| cmds::sessions(&d).into_iter().map(|s| s.name).collect())
+                .unwrap_or_default();
+            uninstall::run(dry, force, &running)
+        }
+        other => {
+            if let Some(o) = other {
+                eprintln!("spot: unknown self command '{o}'\n");
+            }
+            println!(
+                "spot self <command> — manage the spot installation itself
+
+    spot self update            Check for and install the latest release
+    spot self uninstall         Remove the rc snippet, the `stay` link and the binary
+        --dry-run, -n           Show what would be removed, change nothing
+        --force, -f             Uninstall even with sessions running"
+            );
+            i32::from(other.is_some())
+        }
+    }
 }
 
 fn start(dir: &std::path::Path, name: &str, opts: &Options, create: bool) -> i32 {
@@ -348,9 +376,9 @@ OPTIONS (session creation):
 
 OTHER:
     spot --init              Print the shell snippet for your rc file
-    spot --uninstall         Remove the rc snippet, the `stay` link and the binary
+    spot self update         Check for and install the latest release
+    spot self uninstall      Remove the rc snippet, the `stay` link and the binary
                              (--dry-run to preview, --force if sessions are running)
-    spot --update            Check for and install the latest release
     spot --version, -v       Print version
 
 Inside a session, `stay` detaches it. In the picker: ↑/↓ move, enter selects,

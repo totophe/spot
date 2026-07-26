@@ -1,7 +1,7 @@
 //! omz-style self-update against GitHub Releases. Ported from `tmosh`.
 //!
 //! A throttled background check (at most once per 24h) writes a stamp file and
-//! never blocks login. `--update` forces an immediate check + install.
+//! never blocks login. `spot self update` forces an immediate check + install.
 
 use std::env;
 use std::fs;
@@ -42,14 +42,14 @@ fn touch_stamp() {
     }
 }
 
-/// Spawn a detached `spot --self-update-bg`; returns immediately.
+/// Spawn a detached `spot self update --background`; returns immediately.
 pub fn maybe_check_in_background() {
     if !due_for_check() {
         return;
     }
     if let Ok(exe) = env::current_exe() {
         let _ = Command::new(exe)
-            .arg("--self-update-bg")
+            .args(["self", "update", "--background"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

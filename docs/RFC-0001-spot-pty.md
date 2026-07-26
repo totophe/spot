@@ -66,6 +66,7 @@ To eliminate shortcut collisions across nested layers (SSH → `spot` → `zelli
 | **`spot ls`** | `spot ls` | List active sessions, PIDs, and attach states. |
 | **`spot drop`** | `spot drop <name>` | Send `SIGTERM` to the child process and delete socket. |
 | **`spot where`** | `spot where` (alias `pwd`) | Which session am I in, and how deep. Exits 0 inside, 1 outside. |
+| **`spot self`** | `spot self update` / `spot self uninstall` | The installation's own lifecycle, grouped rustup-style so it reserves one word rather than one per verb. |
 
 ---
 

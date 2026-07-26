@@ -21,14 +21,14 @@ in `Cargo.toml`, so the order below matters.
    publishes for the installer and self-updater.
 6. Watch the Release workflow. It cross-builds Linux (x86_64, aarch64) and macOS
    (aarch64), publishes them plus `SHA256SUMS` as release assets, and those are
-   what `install.sh` and `spot --update` download.
+   what `install.sh` and `spot self update` download.
 
 ## Verifying a release
 
 ```sh
 SPOT_VERSION=vX.Y.Z sh install.sh
 spot --version
-spot --update          # should report "Already up to date"
+spot self update          # should report "Already up to date"
 ```
 
 ## Notes

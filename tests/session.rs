@@ -890,7 +890,7 @@ fn uninstall_removes_the_rc_snippet_the_link_and_the_binary() {
     // Dry run must change nothing.
     let before = std::fs::read_to_string(&rc).unwrap();
     let out = std::process::Command::new(&bin)
-        .args(["--uninstall", "--dry-run"])
+        .args(["self", "uninstall", "--dry-run"])
         .env("HOME", &home)
         .env("XDG_RUNTIME_DIR", &env.dir)
         .output()
@@ -909,7 +909,7 @@ fn uninstall_removes_the_rc_snippet_the_link_and_the_binary() {
 
     // The real thing.
     let out = std::process::Command::new(&bin)
-        .arg("--uninstall")
+        .args(["self", "uninstall"])
         .env("HOME", &home)
         .env("XDG_RUNTIME_DIR", &env.dir)
         .output()
@@ -944,7 +944,7 @@ fn uninstall_refuses_while_sessions_are_running() {
     assert!(wait_state(&env, "keepme", "attached"));
 
     let out = std::process::Command::new(&bin)
-        .arg("--uninstall")
+        .args(["self", "uninstall"])
         .env("HOME", &home)
         .env("XDG_RUNTIME_DIR", &env.dir)
         .output()
@@ -956,7 +956,7 @@ fn uninstall_refuses_while_sessions_are_running() {
 
     // --force overrides.
     let out = std::process::Command::new(&bin)
-        .args(["--uninstall", "--force"])
+        .args(["self", "uninstall", "--force"])
         .env("HOME", &home)
         .env("XDG_RUNTIME_DIR", &env.dir)
         .output()
@@ -968,4 +968,26 @@ fn uninstall_refuses_while_sessions_are_running() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(!bin.exists(), "--force should have uninstalled");
+}
+
+#[test]
+fn self_groups_the_lifecycle_commands() {
+    let env = Env::new("selfns");
+    // Bare `spot self` explains itself rather than erroring.
+    let (out, code) = env.run(&["self"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("self update"), "got: {out}");
+    assert!(out.contains("self uninstall"), "got: {out}");
+
+    // A typo is an error, not a session called "updat".
+    let (out, code) = env.run(&["self", "updat"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("unknown self command"), "got: {out}");
+
+    // The old flags are gone, not silently treated as session names.
+    for old in ["--update", "--uninstall"] {
+        let (out, code) = env.run(&[old]);
+        assert_eq!(code, 1, "{old} should be rejected: {out}");
+        assert!(out.contains("unknown option"), "{old}: {out}");
+    }
 }
