@@ -488,6 +488,19 @@ survives the drop and can clean up). This is worth stating plainly in the README
   socket is writable again it discards the queue and performs a §6 restore instead.
   A lagging client therefore skips forward rather than falling permanently behind, and
   memory is bounded in every case.
+* Discarding the queue has two obligations, both of which the daemon must honour or
+  the recovery is worse than the lag:
+  1. **The queue is a queue of whole frames, and the frame already partly written is
+     kept.** Its header has committed the daemon to N payload bytes; discarding the
+     remainder leaves the client reading the next frame's header as payload, and the
+     decoder never resynchronises. Bounded memory does not license a truncated frame.
+  2. **A §6 painter is sent a §6 repaint,** by the same forced resize a reattach uses.
+     The discard cuts a frame in half and a painter will not draw another unprompted,
+     so without this the tear is permanent. A line-oriented child gets the ring, as
+     on reattach.
+* Both obligations bind hardest on wide terminals, where a single full-screen frame is
+  a sizeable fraction of the queue ceiling and the lagged path is ordinary rather than
+  exceptional.
 
 ---
 

@@ -12,6 +12,11 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 pub struct RawGuard {
     fd: RawFd,
     saved: libc::termios,
+    /// The file *status* flags as we found them. fds 0/1/2 are normally dups of
+    /// one open file description, so `O_NONBLOCK` set for our own stdin reads is
+    /// also set on the shell's stdout after we exit — and a shell that meets
+    /// `EAGAIN` on stdout misbehaves in ways nobody traces back to us.
+    saved_flags: libc::c_int,
     active: bool,
 }
 
@@ -30,12 +35,14 @@ impl RawGuard {
             // Block until at least one byte is available; no read timeout.
             raw.c_cc[libc::VMIN] = 1;
             raw.c_cc[libc::VTIME] = 0;
+            let saved_flags = libc::fcntl(fd, libc::F_GETFL);
             if libc::tcsetattr(fd, libc::TCSANOW, &raw) < 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(Self {
                 fd,
                 saved,
+                saved_flags,
                 active: true,
             })
         }
@@ -43,7 +50,12 @@ impl RawGuard {
 
     pub fn restore(&mut self) {
         if self.active {
-            unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved) };
+            unsafe {
+                libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved);
+                if self.saved_flags >= 0 {
+                    libc::fcntl(self.fd, libc::F_SETFL, self.saved_flags);
+                }
+            }
             self.active = false;
         }
     }
@@ -136,8 +148,10 @@ pub fn is_tty(fd: RawFd) -> bool {
     unsafe { libc::isatty(fd) == 1 }
 }
 
-/// Write all of `buf` to `fd`, retrying short writes and `EINTR`.
-pub fn write_all(fd: RawFd, buf: &[u8]) -> io::Result<()> {
+/// Write as much of `buf` as the fd will take without blocking, retrying `EINTR`.
+/// Returns how many bytes went out; `EAGAIN` is reported as a short write, not an
+/// error, so the caller can keep the remainder and try again on `POLLOUT`.
+pub fn write_some(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
     let mut off = 0;
     while off < buf.len() {
         let n = unsafe {
@@ -149,12 +163,41 @@ pub fn write_all(fd: RawFd, buf: &[u8]) -> io::Result<()> {
         };
         if n < 0 {
             let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::Interrupted {
-                continue;
+            match e.kind() {
+                io::ErrorKind::Interrupted => continue,
+                io::ErrorKind::WouldBlock => return Ok(off),
+                _ => return Err(e),
             }
-            return Err(e);
         }
         off += n as usize;
+    }
+    Ok(off)
+}
+
+/// Write all of `buf` to `fd`, retrying short writes and `EINTR`, and *waiting*
+/// on `EAGAIN` rather than giving up.
+///
+/// The waiting is the point. fd 0 and fd 1 usually share one open file
+/// description, so putting stdin in non-blocking mode puts stdout there too —
+/// and a terminal accepts only a few KiB at a time. Treating that `EAGAIN` as a
+/// failure discards the tail of whatever was being drawn, which is how a single
+/// repaint arrives with its bottom half missing. Blocking here is correct: it is
+/// backpressure onto the daemon, which already knows how to resync a lagging
+/// client from the ring.
+pub fn write_all(fd: RawFd, buf: &[u8]) -> io::Result<()> {
+    let mut off = 0;
+    while off < buf.len() {
+        off += write_some(fd, &buf[off..])?;
+        if off < buf.len() {
+            let mut p = libc::pollfd {
+                fd,
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            // Errors here are either EINTR (retry) or a broken fd, which the next
+            // write will report properly.
+            unsafe { libc::poll(&mut p, 1, -1) };
+        }
     }
     Ok(())
 }

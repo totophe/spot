@@ -32,12 +32,23 @@ impl Env {
     }
 
     /// PATH with this env's `stay` symlink in front.
+    ///
+    /// Not enough on its own: spot starts its child as a *login* shell, and a
+    /// login shell reads `/etc/profile`, which on most distributions assigns
+    /// `PATH` outright rather than appending to it — so anything typed at that
+    /// shell must be spelled with `bin()` instead of relying on this.
     fn path_with_stay(&self) -> String {
         format!(
             "{}:{}",
             self.dir.join("bin").display(),
             std::env::var("PATH").unwrap_or_default()
         )
+    }
+
+    /// Absolute path to one of this env's symlinks. Still exercises `argv[0]`
+    /// dispatch, which keys off the file name and not how it was found.
+    fn bin(&self, name: &str) -> String {
+        self.dir.join("bin").join(name).display().to_string()
     }
 
     fn cmd(&self) -> Command {
@@ -261,6 +272,73 @@ fn passes_every_byte_value_through_untouched() {
         got.len()
     );
     assert!(payload.contains(&0x02));
+}
+
+#[test]
+fn a_burst_larger_than_the_terminal_buffer_arrives_whole() {
+    // The regression this guards: fds 0/1/2 share one open file description, so
+    // making stdin non-blocking made stdout non-blocking too, and a terminal
+    // accepts only a few KiB at a time. Treating that EAGAIN as a write failure
+    // silently discarded the tail of the burst — which is what made a repainting
+    // TUI look torn with no detach involved at all.
+    const LAST: usize = 60_000; // ~350 KiB: far past any tty buffer, well under MAX_QUEUE
+    let env = Env::new("burst");
+    let c = PtyClient::spawn(
+        &env,
+        &[
+            "burst",
+            "--",
+            "sh",
+            "-c",
+            // Two details the test needs. The burst waits on a line of input, so
+            // it happens while a client is *attached* — start it at session
+            // creation and the client only ever sees the 64 KiB ring replay,
+            // which measures the ring rather than the write path. And `exec cat`
+            // holds the session open afterwards, so the test is not racing the
+            // teardown of a child that exits the instant the burst ends.
+            &format!("stty raw -echo; read go; seq 1 {LAST}; exec cat"),
+        ],
+    );
+    assert!(wait_state(&env, "burst", "attached"));
+    // Let the shell reach `read`, so the trigger is not typed into the void.
+    std::thread::sleep(Duration::from_millis(300));
+    c.write(b"go\n");
+
+    let tail = format!("{LAST}");
+    let got = c.read_until(Duration::from_secs(20), |acc| {
+        String::from_utf8_lossy(acc).trim_end().ends_with(&tail)
+    });
+
+    let numbers: Vec<usize> = String::from_utf8_lossy(&got)
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let start = numbers.iter().position(|n| *n == 1).unwrap_or_else(|| {
+        panic!(
+            "never saw the start of the burst; got {} bytes: {:?}",
+            got.len(),
+            String::from_utf8_lossy(&got[..got.len().min(400)])
+        )
+    });
+    // Reported as the first gap rather than as a vector comparison: 60,000
+    // elements of "expected" tell you nothing, and the number where the stream
+    // tore is the whole diagnosis.
+    let seen = &numbers[start..];
+    if let Some((i, n)) = seen.iter().enumerate().find(|(i, n)| **n != i + 1) {
+        panic!(
+            "burst tore at value {}: expected {}, got {n} ({} of {LAST} values arrived)",
+            i + 1,
+            i + 1,
+            seen.len()
+        );
+    }
+    assert_eq!(
+        seen.len(),
+        LAST,
+        "burst was truncated: {} of {LAST} values arrived",
+        seen.len()
+    );
 }
 
 #[test]
@@ -638,7 +716,7 @@ fn bare_stay_inside_a_session_reports_exactly_once() {
     );
     assert!(wait_state(&env, "inside", "attached"));
 
-    c.write(b"stay\n");
+    c.write(format!("{}\n", env.bin("stay")).as_bytes());
     let out = c.read_until(Duration::from_secs(5), |a| {
         String::from_utf8_lossy(a).contains("Spot will stay")
     });
@@ -672,7 +750,7 @@ fn where_reports_which_session_and_how_deep() {
     );
     assert!(wait_state(&env, "outer", "attached"));
 
-    c.write(b"spot where\n");
+    c.write(format!("{} where\n", env.bin("spot")).as_bytes());
     let out = c.read_until(Duration::from_secs(5), |a| {
         String::from_utf8_lossy(a).contains("Inside spot session")
     });
@@ -680,9 +758,9 @@ fn where_reports_which_session_and_how_deep() {
     assert!(s.contains("Inside spot session 'outer'"), "got: {s}");
 
     // Nest a second session inside the first, then ask again.
-    c.write(b"spot inner\n");
+    c.write(format!("{} inner\n", env.bin("spot")).as_bytes());
     assert!(wait_state(&env, "inner", "attached"));
-    c.write(b"spot where\n");
+    c.write(format!("{} where\n", env.bin("spot")).as_bytes());
     let out = c.read_until(Duration::from_secs(5), |a| {
         String::from_utf8_lossy(a).contains("sessions deep")
     });
@@ -695,9 +773,9 @@ fn where_reports_which_session_and_how_deep() {
     );
 
     // Three deep earns the Inception nod.
-    c.write(b"spot deepest\n");
+    c.write(format!("{} deepest\n", env.bin("spot")).as_bytes());
     assert!(wait_state(&env, "deepest", "attached"));
-    c.write(b"spot where\n");
+    c.write(format!("{} where\n", env.bin("spot")).as_bytes());
     let out = c.read_until(Duration::from_secs(5), |a| {
         String::from_utf8_lossy(a).contains("totem")
     });
@@ -850,6 +928,73 @@ fn reattaching_forces_a_full_screen_app_to_repaint() {
     );
 
     let _ = env.run(&["drop", "tui", "--force"]);
+}
+
+/// The last `<tag><number>` in `haystack`. The *last* one because the child
+/// repeats its report, and an early copy may well have been inside the backlog
+/// the daemon dropped.
+fn last_number_after(haystack: &[u8], tag: &str) -> Option<usize> {
+    let s = String::from_utf8_lossy(haystack);
+    let at = s.rfind(tag)? + tag.len();
+    let digits: String = s[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+#[test]
+fn a_full_screen_child_repaints_after_a_dropped_backlog() {
+    // When a client cannot keep up, the daemon throws the backlog away rather
+    // than buffer without bound. That is correct — but it cuts a frame in half,
+    // and a painter has no reason to draw another one, so the tear stays on
+    // screen. Wide terminals make this routine rather than exotic: one
+    // full-screen frame is already a sizeable fraction of MAX_QUEUE.
+    let env = Env::new("lagdrop");
+    let probe = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/flood_probe.py");
+
+    let c = PtyClient::spawn(&env, &["lagdrop", "--", "python3", probe]);
+    assert!(wait_state(&env, "lagdrop", "attached"));
+
+    // Attaching forces its own repaint; let it finish, so it lands in the
+    // baseline and what we measure afterwards is the lag-drop's doing alone.
+    c.read_until(Duration::from_secs(6), |a| {
+        a.windows(8).any(|w| w == b"\x1b[?1049h")
+    });
+    std::thread::sleep(Duration::from_millis(400));
+
+    c.write(b"go\n");
+    let baseline = {
+        let out = c.read_until(Duration::from_secs(6), |a| {
+            String::from_utf8_lossy(a).contains("BASE ")
+        });
+        last_number_after(&out, "BASE ").unwrap_or_else(|| {
+            panic!(
+                "child never reported its baseline winch count; got {:?}",
+                String::from_utf8_lossy(&out).escape_debug().to_string()
+            )
+        })
+    };
+
+    // Deliberately do not read while the flood runs: an idle reader is what
+    // makes the backlog build in the first place.
+    std::thread::sleep(Duration::from_secs(2));
+
+    let out = c.read_until(Duration::from_secs(20), |a| {
+        String::from_utf8_lossy(a).contains("WINCH ")
+    });
+    let after = last_number_after(&out, "WINCH ").unwrap_or_else(|| {
+        let s = String::from_utf8_lossy(&out);
+        panic!(
+            "child never reported a winch count after the flood; {} bytes, tail: {:?}",
+            out.len(),
+            s[s.len().saturating_sub(300)..].escape_debug().to_string()
+        )
+    });
+    assert!(
+        after > baseline,
+        "the backlog was dropped but the child was never told to repaint, so \
+         the tear would stay on screen. Winch count went {baseline} -> {after}."
+    );
+
+    let _ = env.run(&["drop", "lagdrop", "--force"]);
 }
 
 /// A throwaway `spot` binary plus a fake HOME, so uninstall can delete a real

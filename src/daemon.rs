@@ -12,6 +12,7 @@ use crate::pty::{self, Pty};
 use crate::ring::Ring;
 use crate::term;
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
@@ -38,7 +39,16 @@ struct Conn {
     id: u64,
     stream: UnixStream,
     dec: Decoder,
-    out: Vec<u8>,
+    /// Queued frames, kept whole rather than concatenated into one byte buffer.
+    /// The distinction only matters when a backlog has to be dropped — see
+    /// `drop_backlog`, where cutting a frame in half desynchronises the client's
+    /// decoder for the rest of the session.
+    out: VecDeque<Vec<u8>>,
+    /// Bytes of `out.front()` already written.
+    head_off: usize,
+    /// Bytes still owed across every queued frame, so the backlog can be sized
+    /// without walking the queue.
+    queued: usize,
     role: u8,
     pid: u32,
     closing: bool,
@@ -47,7 +57,9 @@ struct Conn {
 
 impl Conn {
     fn queue(&mut self, ty: u8, payload: &[u8]) {
-        self.out.extend_from_slice(&encode(ty, payload));
+        let frame = encode(ty, payload);
+        self.queued += frame.len();
+        self.out.push_back(frame);
     }
 
     /// Output data is chunked to the protocol's payload ceiling.
@@ -57,15 +69,49 @@ impl Conn {
         }
     }
 
+    fn idle(&self) -> bool {
+        self.out.is_empty()
+    }
+
+    /// Throw away everything queued, keeping only the frame already partly on
+    /// the wire.
+    ///
+    /// That frame is the whole subtlety. Its header has told the client to
+    /// expect N payload bytes; drop the rest and the client reads the *next*
+    /// frame's header as payload, and every frame after it is misparsed — which
+    /// surfaces as `frame payload 2021161080 exceeds maximum` (that number is
+    /// the ASCII of whatever four bytes landed where a length was expected).
+    fn drop_backlog(&mut self) {
+        let partial = if self.head_off > 0 {
+            self.out.pop_front()
+        } else {
+            None
+        };
+        self.out.clear();
+        self.queued = 0;
+        match partial {
+            Some(frame) => {
+                self.queued = frame.len() - self.head_off;
+                self.out.push_front(frame);
+            }
+            None => self.head_off = 0,
+        }
+    }
+
     fn flush(&mut self) {
-        while !self.out.is_empty() {
-            match self.stream.write(&self.out) {
+        while let Some(front) = self.out.front() {
+            match self.stream.write(&front[self.head_off..]) {
                 Ok(0) => {
                     self.dead = true;
                     return;
                 }
                 Ok(n) => {
-                    self.out.drain(..n);
+                    self.head_off += n;
+                    self.queued -= n;
+                    if self.head_off == front.len() {
+                        self.out.pop_front();
+                        self.head_off = 0;
+                    }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
@@ -108,6 +154,11 @@ pub struct Daemon {
     served_attach: bool,
     /// Set on attach: the next resize must force a full repaint.
     pending_repaint: bool,
+    /// Keystrokes the PTY master would not take yet. The daemon cannot block
+    /// writing these: a child that has stopped reading its input because it is
+    /// blocked writing *output* would deadlock us both — we would be waiting on
+    /// its stdin while it waits on us to drain its stdout.
+    pty_in: Vec<u8>,
     /// A deliberately-wrong window size in effect, and when to put the real one
     /// back. See the resize handling for why the wrong size has to linger.
     resize_restore: Option<(Instant, (u16, u16, u16, u16))>,
@@ -250,6 +301,7 @@ fn start(
         shutting_down: false,
         served_attach: false,
         pending_repaint: false,
+        pty_in: Vec::new(),
         resize_restore: None,
         applied_size: winsize,
         linger_until: None,
@@ -278,7 +330,11 @@ impl Daemon {
             fds.push(poll_in(self.sig_read));
 
             let master_slot = if !self.pty_eof {
-                fds.push(poll_in(self.pty.master.as_raw_fd()));
+                let mut p = poll_in(self.pty.master.as_raw_fd());
+                if !self.pty_in.is_empty() {
+                    p.events |= libc::POLLOUT;
+                }
+                fds.push(p);
                 Some(fds.len() - 1)
             } else {
                 None
@@ -287,7 +343,7 @@ impl Daemon {
             let conn_start = fds.len();
             for c in &self.conns {
                 let mut events = libc::POLLIN;
-                if !c.out.is_empty() {
+                if !c.idle() {
                     events |= libc::POLLOUT;
                 }
                 fds.push(libc::pollfd {
@@ -326,6 +382,9 @@ impl Daemon {
             }
 
             if let Some(slot) = master_slot {
+                if fds[slot].revents & libc::POLLOUT != 0 {
+                    self.flush_input();
+                }
                 if fds[slot].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
                     self.pump_pty();
                 }
@@ -364,7 +423,7 @@ impl Daemon {
             }
             self.sweep();
 
-            if self.shutting_down && self.conns.iter().all(|c| c.out.is_empty()) {
+            if self.shutting_down && self.conns.iter().all(|c| c.idle()) {
                 // A child that exits in milliseconds would otherwise be gone
                 // before the client that started it can attach — and its exit
                 // status with it. Hold the door briefly for the first attach.
@@ -373,6 +432,61 @@ impl Daemon {
                     _ => break,
                 }
             }
+        }
+    }
+
+    /// Make a full-screen child repaint, by making the window size genuinely
+    /// change under it.
+    ///
+    /// Reattaching to a full-screen app is the case that decides whether this
+    /// tool is any good, and a bare SIGWINCH is not enough: zellij (and others)
+    /// read the size, see no change, and do nothing — leaving you looking at a
+    /// black screen. The wrong size also has to *linger*: setting it and putting
+    /// it back immediately is useless, because an app that reads the size inside
+    /// its SIGWINCH handler still sees no change.
+    fn force_repaint(&mut self) {
+        let size = self.winsize;
+        if self.exit_status.is_some() {
+            // No child to repaint; just make the real size the one that stands.
+            self.resize_restore = None;
+            self.apply_winsize(size);
+            return;
+        }
+        let (cols, rows, x, y) = size;
+        let nudged = if rows > 1 { rows - 1 } else { rows + 1 };
+        self.apply_winsize((cols, nudged, x, y));
+        // Always re-arm, even with a nudge already in flight. Skipping in that
+        // case looks tempting — it would stop a burst of lag-drops from holding
+        // the child a row short — but a reattach that lands inside the 120 ms
+        // window is common, and skipping it there is precisely the black screen
+        // this whole mechanism exists to prevent. Re-arming also retargets the
+        // restore, so a resize that arrived mid-nudge is not undone by it.
+        self.resize_restore = Some((Instant::now() + REPAINT_NUDGE, size));
+    }
+
+    /// Accept keystrokes for the child and push what the master will take now.
+    fn queue_input(&mut self, data: &[u8]) {
+        if self.pty_in.len() + data.len() > MAX_QUEUE {
+            // A child ignoring its stdin must not grow our memory without bound.
+            // Drop the newest rather than the oldest: losing the tail of a paste
+            // is recoverable, reordering a keystroke stream is not.
+            return;
+        }
+        self.pty_in.extend_from_slice(data);
+        self.flush_input();
+    }
+
+    /// Push buffered keystrokes at the master, keeping whatever it refuses.
+    fn flush_input(&mut self) {
+        if self.pty_in.is_empty() {
+            return;
+        }
+        match term::write_some(self.pty.master.as_raw_fd(), &self.pty_in) {
+            Ok(n) => {
+                self.pty_in.drain(..n);
+            }
+            // The child is gone or the master is broken; pump_pty will see it.
+            Err(_) => self.pty_in.clear(),
         }
     }
 
@@ -393,20 +507,40 @@ impl Daemon {
                 self.ring.push(data);
                 self.last_output = unix_now();
                 if let Some(id) = self.attached {
-                    if let Some(c) = self.conns.iter_mut().find(|c| c.id == id) {
-                        if c.out.len() + data.len() > MAX_QUEUE {
-                            // Lagged: throw away the backlog and resync from the
-                            // ring rather than buffer without bound.
-                            c.out.clear();
-                            let restore = self.modes.restore_sequence();
+                    let lagged = self
+                        .conns
+                        .iter()
+                        .find(|c| c.id == id)
+                        .is_some_and(|c| c.queued + data.len() > MAX_QUEUE);
+                    if lagged {
+                        // Throw away the backlog and resync rather than buffer
+                        // without bound. What "resync" means depends on the
+                        // child, and the split matters most on a wide terminal,
+                        // where a single full-screen frame is a sizeable
+                        // fraction of MAX_QUEUE and overflow is routine.
+                        let ring = self.ring.contents();
+                        let painter =
+                            self.modes.alt_screen() || crate::ring::repaints_screen(&ring);
+                        let restore = self.modes.restore_sequence();
+                        if let Some(c) = self.conns.iter_mut().find(|c| c.id == id) {
+                            c.drop_backlog();
                             c.queue_output(&restore);
-                            let ring = self.ring.contents();
-                            if !self.modes.alt_screen() && !crate::ring::repaints_screen(&ring) {
-                                c.queue_output(&ring);
-                            }
-                        } else {
-                            c.queue_output(data);
+                            // A painter's ring holds stale frames it is about to
+                            // overdraw, so send only the newest bytes. A
+                            // line-oriented child repaints nothing, so its
+                            // scrollback is the only context there is — and the
+                            // ring already contains `data`.
+                            c.queue_output(if painter { data } else { &ring });
                         }
+                        // The part that was missing: dropping the backlog cuts a
+                        // frame in half, and a painter has no reason to draw
+                        // another one. Without this, zellij holds a torn screen
+                        // until something unrelated makes it redraw.
+                        if painter {
+                            self.force_repaint();
+                        }
+                    } else if let Some(c) = self.conns.iter_mut().find(|c| c.id == id) {
+                        c.queue_output(data);
                     }
                 }
                 continue;
@@ -533,7 +667,9 @@ impl Daemon {
                         id,
                         stream,
                         dec: Decoder::new(),
-                        out: Vec::new(),
+                        out: VecDeque::new(),
+                        head_off: 0,
+                        queued: 0,
                         role: 0,
                         pid: 0,
                         closing: false,
@@ -616,7 +752,7 @@ impl Daemon {
         match f.ty {
             T_DATA if role == ROLE_ATTACH && self.attached == Some(id) => {
                 if self.exit_status.is_none() {
-                    let _ = term::write_all(self.pty.master.as_raw_fd(), &f.payload);
+                    self.queue_input(&f.payload);
                 }
             }
             T_RESIZE if role == ROLE_ATTACH => {
@@ -625,20 +761,8 @@ impl Daemon {
                     self.pending_repaint = false;
                     self.winsize = (cols, rows, x, y);
 
-                    // Reattaching to a full-screen app is the case that decides
-                    // whether this tool is any good, and a bare SIGWINCH is not
-                    // enough: zellij (and others) read the size, see no change,
-                    // and do nothing — leaving you looking at a black screen.
-                    // Force a genuine change so the repaint is unavoidable.
-                    if repaint && self.exit_status.is_none() {
-                        // The wrong size has to *linger*. Setting it and putting
-                        // it back immediately is useless: an app that reads the
-                        // size inside its SIGWINCH handler still sees no change,
-                        // which is exactly the black screen we are fixing.
-                        let nudged = if rows > 1 { rows - 1 } else { rows + 1 };
-                        self.apply_winsize((cols, nudged, x, y));
-                        self.resize_restore =
-                            Some((Instant::now() + REPAINT_NUDGE, (cols, rows, x, y)));
+                    if repaint {
+                        self.force_repaint();
                     } else {
                         self.resize_restore = None;
                         self.apply_winsize((cols, rows, x, y));

@@ -12,9 +12,10 @@ A single-purpose PTY session guardian. `spot` sits silently beneath your
 terminal, shell, or multiplexer, keeping processes alive across network drops,
 SSH timeouts and laptop sleeps — without stealing keystrokes.
 
-**Status: v0.0.1, early.** The core works and is covered by tests, and it has
-been used on real hardware — but not for long, and there is an open report worth
-knowing about before you rely on it. See [Known limits](#known-limits).
+**Status: v0.0.2, early.** The core works and is covered by tests, and it has
+been used on real hardware — but not for long. v0.0.2 fixes three bugs that
+between them made a repainting TUI look torn even with no detach involved; see
+[Known limits](#known-limits) for what is still open.
 
 ## What it is, and is not
 
@@ -221,6 +222,29 @@ makes it self-expiring: quit `top`, and once its frames age out of the buffer
 the session counts as line-oriented again. `spot` never guesses what it is
 running — only whether the bytes coming out of it paint.
 
+### When the client cannot keep up
+
+The daemon drains the PTY whether or not anyone is reading, so a burst of output
+piles up in the queue for the attached client. That queue is capped at 1 MiB;
+past it the client is declared lagged and the backlog is thrown away rather than
+buffered without bound.
+
+Two details make the difference between that being a recovery and being a mess,
+and both are wide-terminal problems in practice — one full-screen frame with
+per-cell colour can be a sizeable fraction of the cap, so on a wide screen this
+path is routine rather than exotic:
+
+- **The frame already partly on the wire is kept.** Its header has told the
+  client to expect N payload bytes. Drop the rest and the client reads the next
+  frame's header as payload, and every frame after it is misparsed — the session
+  dies with `frame payload 2021161080 exceeds maximum` (that number being the
+  ASCII of whatever four bytes landed where a length was expected).
+- **A screen-painting child is told to repaint.** Dropping a backlog cuts a
+  frame in half, and a painter has no reason to draw another one on its own, so
+  the tear would simply stay there. It gets the same forced resize a reattach
+  uses. A line-oriented child instead gets the ring replayed, for the same
+  reason it does on reattach.
+
 ### The garbled-terminal problem
 
 If you have ever had an SSH connection drop and then watched your terminal spew
@@ -267,17 +291,30 @@ the last session ends `spot` leaves nothing behind but its own binary.
 ## Known limits
 
 - **Open report: reattaching into `nvim` came back black** on one machine, with
-  <kbd>Esc</kbd> redrawing part of the screen. Not reproducible here across five
-  detach/resize combinations against a stock `nvim -u NONE`, so it is likely
-  config- or terminal-specific — but it is the headline feature, so treat it as
-  unresolved. `scripts/capture-reattach.sh <session>` records what spot actually
-  sent, which distinguishes "spot sent no repaint" from "the app ignored one".
+  <kbd>Esc</kbd> redrawing part of the screen. Never reproduced here. v0.0.2
+  fixed a bug that would produce exactly this — the client discarded the tail of
+  any write the terminal could not take at once, and a reattach sends mode
+  restore plus up to 64 KiB of replay in one go — but that is a plausible
+  explanation, not a confirmed one, so treat it as open until the reporting
+  machine says otherwise. `scripts/capture-reattach.sh <session>` records what
+  spot actually sent, which distinguishes "spot sent no repaint" from "the app
+  ignored one".
 - **Early.** Tested, but not yet battle-worn.
 - Intel macOS is not published. Releases cover Linux x86_64/aarch64 and Apple
   Silicon; the Intel runner pool stalls badly enough to block releases, the same
   call `tmosh` made. Build from source there.
 - The reattach repaint briefly resizes the terminal by one row. Full-screen apps
   reflow through it; it reads as part of the redraw.
+- Writing to your terminal blocks the client while the terminal drains, so a
+  `stay` or a window resize is not acted on until it does. Normally invisible;
+  hit <kbd>Ctrl-S</kbd> and the client is stuck until <kbd>Ctrl-Q</kbd>. The
+  alternative was the 0.0.1 behaviour of discarding what would not fit, which is
+  worse — it corrupted the screen instead of pausing it.
+- A lagging client's backlog is dropped at 1 MiB, so a burst larger than that is
+  not all delivered — see [When the client cannot keep
+  up](#when-the-client-cannot-keep-up). Full-screen apps repaint through it;
+  a shell resyncs from the ring, which is 64 KiB by default and holds well under
+  a screenful on a wide terminal. Raise it with `--ring-bytes`.
 - `TERM` is fixed when the session is created. Reattaching from a terminal with
   a different `TERM` may render imperfectly. `tmux` and `screen` share this
   limitation.
